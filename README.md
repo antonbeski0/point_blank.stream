@@ -1,21 +1,44 @@
-# Point Blank - Stock Analysis & Forecasting App
+# Point Blank - Stock Analysis App
 
-A comprehensive multi-language stock analysis and forecasting application built with Streamlit.
-
-## Features
-
-- 📊 Real-time stock data from Yahoo Finance
-- 📈 Technical indicators (MA, EMA, MACD, Bollinger Bands, RSI)
-- 🤖 AI-powered forecasts (Prophet, ARIMA, Random Forest, LSTM)
-- 🌍 Multi-language support (English, Spanish, French, Portuguese, Tamil)
-- 🗺️ Global city selection with live clock
-- 📰 Latest news integration
-- 💰 Multi-currency support
-- 📱 Responsive design with dark theme
-
+Multi-language stock analysis and forecasting application.
 
 ## Run Locally
 
 ```bash
 pip install -r requirements.txt
 streamlit run app.py
+Features
+Real-time stock data
+
+Technical indicators
+
+AI forecasting models
+
+Multi-language support
+
+Global city selection
+
+News integration
+
+
+
+## GitHub Repository Structure
+pointblank-app/
+├── app.py
+├── requirements.txt
+├── .gitignore
+└── README.md
+
+
+
+## Steps to Upload:
+
+1. Create these 4 files in a folder
+2. Initialize git:
+```bash
+git init
+git add .
+git commit -m "Initial commit"
+git branch -M main
+git remote add origin https://github.com/yourusername/your-repo-name.git
+git push -u origin main
