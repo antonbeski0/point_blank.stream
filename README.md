@@ -13,9 +13,9 @@ A comprehensive multi-language stock analysis and forecasting application built 
 - 💰 Multi-currency support
 - 📱 Responsive design with dark theme
 
-## Installation
 
-1. Clone the repository:
+## Run Locally
+
 ```bash
-git clone https://github.com/yourusername/pointblank-app.git
-cd pointblank-app
+pip install -r requirements.txt
+streamlit run app.py
