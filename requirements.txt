@@ -1,13 +1,15 @@
-streamlit==1.28.0
-yfinance==0.2.18
-pandas==2.0.3
-numpy==1.24.3
-plotly==5.15.0
-streamlit-plotly-events==0.0.4
-pytz==2023.3
-feedparser==6.0.10
-prophet==1.1.4
-statsmodels==0.14.0
-scikit-learn==1.3.0
-tensorflow==2.13.0
-pmdarima==2.0.3
+# Core app
+streamlit
+yfinance
+pandas
+numpy
+plotly
+streamlit-plotly-events
+pytz
+feedparser
+
+# Forecasting models
+prophet
+statsmodels
+scikit-learn
+tensorflow
