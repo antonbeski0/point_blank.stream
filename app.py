@@ -1327,7 +1327,11 @@ def forecast_all(df: pd.DataFrame, periods: int = 30):
         except Exception as e:
             st.error(f"{tr('lstm_error', st.session_state.user_lang)}: {e}")
 
-    return forecasts
+    return forecasts       
+
+                 
+                  
+                      
 
 # --------------------------
 # News Utilities
@@ -1736,3 +1740,4 @@ else:
     with status_cols[3]:
         status = f"✅ {tr('available', st.session_state.user_lang)}" if HAS_TF else f"❌ {tr('missing', st.session_state.user_lang)}"
         st.markdown(f"**{tr('lstm', st.session_state.user_lang)}:** {status}")
+
