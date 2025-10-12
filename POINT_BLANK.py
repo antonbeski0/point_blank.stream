@@ -2807,15 +2807,15 @@ def fetch_yahoo_data(ticker: str, period="6mo", interval="1d", max_retries=3) ->
         return pd.DataFrame()
     
     # Set user agent to prevent rate limiting
-    yf.pdr_override()
+    # Note: pdr_override() is not available in current yfinance versions
     
     for attempt in range(max_retries):
         try:
-            # Create Ticker object with timeout
+            # Create Ticker object
             t = yf.Ticker(clean_ticker)
             
             # Fetch data with timeout
-            df = t.history(period=period, interval=interval, timeout=30)
+            df = t.history(period=period, interval=interval)
             
             # Validate data
             if df is None or df.empty:
