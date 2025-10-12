@@ -3256,54 +3256,41 @@ def fetch_google_news(query: str, max_items: int = 8, hl: str = "en-US", gl: str
 st.title(tr("title", st.session_state.user_lang))
 st.markdown("---")
 
+# Base tickers list
 tickers_list = [
     # 🌎 Americas - Stocks
     "AAPL","MSFT","AMZN","TSLA","JPM",   # New York
     "RY.TO","SHOP.TO","ENB.TO","ABX.TO", # Toronto
-    "AMXL.MX","BIMBOA.MX","CEMEXCPO.MX", # Mexico City
-    "PETR4.SA","VALE3.SA","ITUB4.SA",    # São Paulo
-    "YPFD.BA","GGAL.BA","TEO.BA",        # Buenos Aires
-    "CHILE.SN","ENELAM.SN","SQM.SN",     # Santiago
-    "BAP.LM","BVN.LM","SCCO.LM",         # Lima
-    "CIB","AVAL",                        # Bogotá
+    "VALE","PBR","ITUB","BBD",         # São Paulo
+    "BMA","GGAL","PAM","YPF",          # Buenos Aires
+    "BCH","BAP","FEMSAUBD.MX","WALMEX.MX", # Mexico City
+    "EC","BAP","SCCO","BVN",           # Lima
+    "B3SA3.SA","ITUB4.SA","PETR4.SA",   # São Paulo (B3)
+    "MELI","BIDU","PAGS","BBDC4.SA",   # Other Americas
 
-    # 🌍 Europe & Africa - Stocks
-    "HSBA.L","BP.L","ULVR.L","BARC.L",   # London
-    "MC.PA","TTE.PA","AIR.PA","SAN.PA",  # Paris
-    "SIE.DE","VOW3.DE","SAP.DE","ALV.DE",# Frankfurt
-    "ENI.MI","ISP.MI","RACE.MI",         # Milan/Rome
-    "SAN.MC","TEF.MC","IBE.MC",          # Madrid
-    "RYA.IR","CRH.IR","KYGA.IR",         # Dublin
-    "ETE.AT","HTO.AT",                   # Athens
-    "NOKIA.HE","KNEBV.HE","NESTE.HE",    # Helsinki
-    "PKO.WA","PKN.WA","KGH.WA",          # Warsaw
-    "TCELL.IS","GARAN.IS","AEFES.IS",    # Istanbul
-    "COMI.CA","ETEL.CA",                 # Cairo
-    "SOLJ.J","NPN.J","AGLJ.J",           # Johannesburg
-    "SCOM.NR","EQTY.NR","KCB.NR",        # Nairobi
-    "DANGCEM.LG","MTNN.LG","ZENITH.LG",  # Lagos
-    "ATW.CS","IAM.CS",                   # Casablanca
+    # 🌍 Europe - Stocks
+    "SAP.DE","SIE.DE","DTE.DE","VOW3.DE",  # Frankfurt
+    "SHEL","HSBA.L","BP.L","ULVR.L",    # London
+    "AIR.PA","SAN.PA","OR.PA","MC.PA",   # Paris
+    "ENEL.MI","ENI.MI","ISP.MI","UCG.MI", # Milan
+    "IBE.MC","SAN.MC","BBVA.MC","TEF.MC", # Madrid
+    "NOVOb.CO","NOVO-B.CO","ORSTED.CO",   # Copenhagen
+    "EQNR.OL","DNB.OL","TEL.OL","NHY.OL", # Oslo
+    "ASML.AS","UNA.AS","INGA.AS","PHIA.AS", # Amsterdam
+    "ROG.SW","NOVN.SW","NESN.SW","UBSG.SW", # Zurich
+    "KER.PA","AI.PA","CAP.PA","BNP.PA",  # Other Europe
 
-    # 🌏 Middle East & Asia - Stocks
-    "EMAAR.DU","DIB.DU",                 # Dubai
-    "TEVA.TA","LUMI.TA",                 # Tel Aviv
-    "ARBK.AM","THBK.AM",                 # Amman
-    "OGDC.KA","HBL.KA",                  # Karachi
-    "RELIANCE.NS","TCS.NS","INFY.NS","HDFCBANK.NS", # Delhi
-    "NTC.NP","NABIL.NP",                 # Kathmandu
-    "GP.DH","SQURPHARMA.DH",             # Dhaka
-    "JKH.CM","COMB.CM",                  # Colombo
-    "PTT.BK","SCC.BK","BBL.BK",          # Bangkok
-    "D05.SI","Z74.SI","BN4.SI",          # Singapore
-    "MAYBANK.KL","PCHEM.KL","TENAGA.KL", # Kuala Lumpur
-    "BBCA.JK","TLKM.JK",                 # Jakarta
-    "601398.SS","601857.SS","600104.SS", # Shanghai
-    "2330.TW","2317.TW","2454.TW",       # Taipei
-    "7203.T","6758.T","9984.T","7974.T", # Tokyo
-    "005930.KQ","005380.KQ","000660.KQ", # Seoul
-    "KMGZ.KZ","HSBK.KZ",                 # Almaty
-    "UZAUTO.UZ",                         # Tashkent
-    "APU.MN","TTL.MN",                   # Ulaanbaatar
+    # 🌏 Asia & Oceania - Stocks
+    "005930.KS","000660.KS","035420.KS",   # Seoul
+    "7203.T","9984.T","9433.T","8035.T",  # Tokyo
+    "BABA","TCEHY","JD","BIDU",          # China/HK (US-listed)
+    "601318.SS","600519.SS","601398.SS",  # Shanghai
+    "0700.HK","1299.HK","0941.HK","0005.HK", # Hong Kong
+    "TCS.NS","HDFCBANK.NS","INFY.NS",     # Mumbai
+    "BHP.AX","CSL.AX","NAB.AX","WOW.AX",  # Sydney
+    "AIA.NZ","FRE.NZ","MFT.NZ","RYM.NZ",  # Auckland
+    "S68.SI","D05.SI","U11.SI","O39.SI",  # Singapore
+    "PTT.BK","CPALL.BK","ADVANC.BK",      # Bangkok
     "FMI.MM","MTSH.MM",                  # Yangon
 
     # 🌊 Oceania - Stocks
@@ -3331,7 +3318,10 @@ tickers_list = [
 # Enhanced dropdown controls with better styling
 controls = st.columns([2,2,2,2,1])
 with controls[0]:
-    ticker = st.selectbox(tr("ticker_label", st.session_state.user_lang), tickers_list, index=0)
+    ticker_selected = st.selectbox(tr("ticker_label", st.session_state.user_lang), tickers_list, index=0)
+    # Extract the raw ticker symbol from the selected string (works for both normal symbols and our "SYMBOL — Label" format)
+    m = re.match(r"^([A-Za-z0-9\-\._=]+)", ticker_selected or "")
+    ticker = m.group(1) if m else (ticker_selected or "")
 with controls[1]:
     period = st.selectbox(tr("period_label", st.session_state.user_lang), ["1mo","3mo","6mo","1y","2y","5y","10y","max"], index=2)
 with controls[2]:
