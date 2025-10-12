@@ -2820,9 +2820,15 @@ def fetch_yahoo_data(ticker: str, period="6mo", interval="1d", max_retries=3) ->
             # Validate data
             if df is None or df.empty:
                 if attempt < max_retries - 1:
+                    st.warning(f"Attempt {attempt + 1} failed for {clean_ticker}. Retrying...")
                     time.sleep(2 ** attempt)  # Exponential backoff
                     continue
-                st.warning(f"No data returned for {clean_ticker}. Please check the ticker symbol and try again.")
+                st.error(f"❌ No data returned for {clean_ticker} after {max_retries} attempts.")
+                st.info("💡 **Troubleshooting tips:**")
+                st.info("• Check if the ticker symbol is correct (e.g., AAPL, TSLA, BTC-USD)")
+                st.info("• Try different ticker formats (e.g., .TO for Canadian stocks)")
+                st.info("• Verify the ticker exists on Yahoo Finance")
+                st.info("• Check your internet connection")
                 return pd.DataFrame()
             
             # Reset index and clean up
@@ -2866,14 +2872,26 @@ def fetch_yahoo_data(ticker: str, period="6mo", interval="1d", max_retries=3) ->
             
         except RequestException as e:
             if attempt == max_retries - 1:
-                st.error(f"Network error while fetching data for {clean_ticker}: {str(e)}")
+                st.error(f"🌐 Network error while fetching data for {clean_ticker}")
+                st.error(f"Error details: {str(e)}")
+                st.info("💡 **Network troubleshooting:**")
+                st.info("• Check your internet connection")
+                st.info("• Try again in a few moments")
+                st.info("• The Yahoo Finance API might be temporarily unavailable")
                 return pd.DataFrame()
+            st.warning(f"Network error on attempt {attempt + 1}. Retrying...")
             time.sleep(2 ** attempt)
             
         except Exception as e:
             if attempt == max_retries - 1:
-                st.error(f"Error fetching data for {clean_ticker}: {str(e)}")
+                st.error(f"❌ Unexpected error while fetching data for {clean_ticker}")
+                st.error(f"Error details: {str(e)}")
+                st.info("💡 **Please try:**")
+                st.info("• Verifying the ticker symbol is correct")
+                st.info("• Using a different ticker format")
+                st.info("• Refreshing the page and trying again")
                 return pd.DataFrame()
+            st.warning(f"Error on attempt {attempt + 1}. Retrying...")
             time.sleep(2 ** attempt)
     
     return pd.DataFrame()
@@ -3293,43 +3311,284 @@ def _resolve_link(entry, feed) -> str:
 def fetch_google_news(query: str, max_items: int = 8, hl: str = "en-US", gl: str = "US", ceid: str = "US:en"):
     if not query:
         return []
-    encoded = urllib.parse.quote_plus(query)
-    rss_url = f"https://news.google.com/rss/search?q={encoded}&hl={hl}&gl={gl}&ceid={ceid}"
-    feed = feedparser.parse(rss_url)
-    entries = feed.entries or []
-    items = []
-    seen = set()
-    for entry in entries:
-        try:
-            title = html.unescape(entry.get("title", "")).strip() or "(no title)"
-            published = _format_time(entry)
-            # source
-            src = ""
-            s = entry.get("source")
-            if isinstance(s, dict):
-                src = s.get("title", "") or ""
-            if not src:
-                src = feed.feed.get("title", "") or entry.get("publisher", "") or "Unknown source"
-            image = _extract_image(entry)
-            link = _resolve_link(entry, feed)
-            if not link:
+    
+    try:
+        encoded = urllib.parse.quote_plus(query)
+        rss_url = f"https://news.google.com/rss/search?q={encoded}&hl={hl}&gl={gl}&ceid={ceid}"
+        
+        # Add timeout and user agent
+        import requests
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        response = requests.get(rss_url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        feed = feedparser.parse(response.content)
+        
+        if not feed.entries:
+            return []
+            
+        entries = feed.entries or []
+        items = []
+        seen = set()
+        
+        for entry in entries:
+            try:
+                title = html.unescape(entry.get("title", "")).strip() or "(no title)"
+                published = _format_time(entry)
+                # source
+                src = ""
+                s = entry.get("source")
+                if isinstance(s, dict):
+                    src = s.get("title", "") or ""
+                if not src:
+                    src = feed.feed.get("title", "") or entry.get("publisher", "") or "Unknown source"
+                image = _extract_image(entry)
+                link = _resolve_link(entry, feed)
+                if not link:
+                    continue
+                # dedupe by resolved link
+                if link in seen:
+                    continue
+                seen.add(link)
+                items.append({
+                    "title": title,
+                    "link": link,
+                    "published": published,
+                    "source": src,
+                    "image": image
+                })
+                if len(items) >= max_items:
+                    break
+            except Exception as e:
+                # Log the error but continue processing other entries
                 continue
-            # dedupe by resolved link
-            if link in seen:
-                continue
-            seen.add(link)
-            items.append({
-                "title": title,
-                "link": link,
-                "published": published,
-                "source": src,
-                "image": image
-            })
-            if len(items) >= max_items:
-                break
-        except Exception:
-            continue
-    return items
+        return items
+        
+    except requests.exceptions.RequestException as e:
+        st.warning(f"⚠️ News fetching failed: {str(e)}")
+        return []
+    except Exception as e:
+        st.warning(f"⚠️ Unexpected error in news fetching: {str(e)}")
+        return []
+
+# --------------------------
+# Technical Analysis Functions
+# --------------------------
+@st.cache_data(ttl=300)
+def generate_technical_analysis(df: pd.DataFrame, ticker: str) -> dict:
+    """Generate comprehensive technical analysis for a stock"""
+    if df.empty or len(df) < 20:
+        return {}
+    
+    analysis = {}
+    latest = df.iloc[-1]
+    prev = df.iloc[-2] if len(df) > 1 else latest
+    
+    # Price Analysis
+    price_change = latest['Close'] - prev['Close']
+    price_change_pct = (price_change / prev['Close']) * 100
+    
+    analysis['price'] = {
+        'current': latest['Close'],
+        'change': price_change,
+        'change_pct': price_change_pct,
+        'trend': 'Bullish' if price_change > 0 else 'Bearish' if price_change < 0 else 'Neutral'
+    }
+    
+    # Moving Averages Analysis
+    if 'SMA_20' in df.columns and 'SMA_50' in df.columns:
+        sma_20 = latest['SMA_20']
+        sma_50 = latest['SMA_50']
+        current_price = latest['Close']
+        
+        if current_price > sma_20 > sma_50:
+            ma_signal = "Strong Bullish"
+        elif current_price > sma_20 and sma_20 < sma_50:
+            ma_signal = "Mixed"
+        elif current_price < sma_20 < sma_50:
+            ma_signal = "Strong Bearish"
+        else:
+            ma_signal = "Neutral"
+            
+        analysis['moving_averages'] = {
+            'sma_20': sma_20,
+            'sma_50': sma_50,
+            'signal': ma_signal
+        }
+    
+    # RSI Analysis
+    if 'RSI' in df.columns:
+        rsi = latest['RSI']
+        if rsi > 70:
+            rsi_signal = "Overbought"
+        elif rsi < 30:
+            rsi_signal = "Oversold"
+        else:
+            rsi_signal = "Neutral"
+            
+        analysis['rsi'] = {
+            'value': rsi,
+            'signal': rsi_signal
+        }
+    
+    # MACD Analysis
+    if 'MACD' in df.columns and 'MACD_Signal' in df.columns:
+        macd = latest['MACD']
+        macd_signal = latest['MACD_Signal']
+        macd_hist = latest.get('MACD_Hist', macd - macd_signal)
+        
+        if macd > macd_signal and macd_hist > 0:
+            macd_trend = "Bullish"
+        elif macd < macd_signal and macd_hist < 0:
+            macd_trend = "Bearish"
+        else:
+            macd_trend = "Neutral"
+            
+        analysis['macd'] = {
+            'macd': macd,
+            'signal': macd_signal,
+            'histogram': macd_hist,
+            'trend': macd_trend
+        }
+    
+    # Bollinger Bands Analysis
+    if 'BB_Upper' in df.columns and 'BB_Lower' in df.columns:
+        bb_upper = latest['BB_Upper']
+        bb_lower = latest['BB_Lower']
+        bb_middle = latest.get('BB_Middle', (bb_upper + bb_lower) / 2)
+        current_price = latest['Close']
+        
+        if current_price > bb_upper:
+            bb_signal = "Overbought"
+        elif current_price < bb_lower:
+            bb_signal = "Oversold"
+        else:
+            bb_signal = "Normal"
+            
+        analysis['bollinger_bands'] = {
+            'upper': bb_upper,
+            'lower': bb_lower,
+            'middle': bb_middle,
+            'signal': bb_signal
+        }
+    
+    # Volume Analysis
+    if 'Volume' in df.columns:
+        avg_volume = df['Volume'].tail(20).mean()
+        current_volume = latest['Volume']
+        volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1
+        
+        if volume_ratio > 1.5:
+            volume_signal = "High Volume"
+        elif volume_ratio < 0.5:
+            volume_signal = "Low Volume"
+        else:
+            volume_signal = "Normal Volume"
+            
+        analysis['volume'] = {
+            'current': current_volume,
+            'average': avg_volume,
+            'ratio': volume_ratio,
+            'signal': volume_signal
+        }
+    
+    # Overall Technical Score
+    bullish_signals = 0
+    total_signals = 0
+    
+    if 'moving_averages' in analysis:
+        total_signals += 1
+        if 'Strong Bullish' in analysis['moving_averages']['signal']:
+            bullish_signals += 1
+        elif 'Mixed' in analysis['moving_averages']['signal']:
+            bullish_signals += 0.5
+    
+    if 'rsi' in analysis:
+        total_signals += 1
+        if analysis['rsi']['signal'] == 'Oversold':
+            bullish_signals += 1
+        elif analysis['rsi']['signal'] == 'Overbought':
+            bullish_signals += 0
+    
+    if 'macd' in analysis:
+        total_signals += 1
+        if analysis['macd']['trend'] == 'Bullish':
+            bullish_signals += 1
+        elif analysis['macd']['trend'] == 'Neutral':
+            bullish_signals += 0.5
+    
+    if 'bollinger_bands' in analysis:
+        total_signals += 1
+        if analysis['bollinger_bands']['signal'] == 'Oversold':
+            bullish_signals += 1
+        elif analysis['bollinger_bands']['signal'] == 'Overbought':
+            bullish_signals += 0
+    
+    if total_signals > 0:
+        technical_score = (bullish_signals / total_signals) * 100
+        if technical_score >= 70:
+            overall_signal = "Strong Buy"
+        elif technical_score >= 60:
+            overall_signal = "Buy"
+        elif technical_score >= 40:
+            overall_signal = "Hold"
+        elif technical_score >= 30:
+            overall_signal = "Sell"
+        else:
+            overall_signal = "Strong Sell"
+    else:
+        technical_score = 50
+        overall_signal = "Hold"
+    
+    analysis['overall'] = {
+        'score': technical_score,
+        'signal': overall_signal
+    }
+    
+    return analysis
+
+@st.cache_data(ttl=3600)
+def validate_ticker(ticker: str) -> dict:
+    """Validate if a ticker symbol exists on Yahoo Finance"""
+    if not ticker:
+        return {"valid": False, "error": "No ticker provided"}
+    
+    try:
+        # Clean the ticker symbol
+        m = re.match(r"^([A-Za-z0-9\-\._=]+)", ticker)
+        clean_ticker = m.group(1) if m else ticker
+        
+        # Try to get basic info
+        t = yf.Ticker(clean_ticker)
+        info = t.info
+        
+        # Check if we got meaningful data
+        if not info or len(info) < 5:
+            return {"valid": False, "error": "Ticker not found or no data available"}
+        
+        # Check for required fields
+        required_fields = ['symbol', 'shortName', 'longName']
+        has_required = any(field in info and info[field] for field in required_fields)
+        
+        if not has_required:
+            return {"valid": False, "error": "Invalid ticker - missing basic information"}
+        
+        return {
+            "valid": True, 
+            "symbol": clean_ticker,
+            "name": info.get('shortName') or info.get('longName', clean_ticker),
+            "exchange": info.get('exchange', 'Unknown'),
+            "currency": info.get('currency', 'USD'),
+            "market_cap": info.get('marketCap'),
+            "sector": info.get('sector'),
+            "industry": info.get('industry')
+        }
+        
+    except Exception as e:
+        return {"valid": False, "error": f"Error validating ticker: {str(e)}"}
 
 # --------------------------
 # Main App
@@ -3415,10 +3674,34 @@ custom_ticker = st.text_input(
     placeholder=tr("ticker_placeholder", st.session_state.user_lang)
 )
 
-# Final ticker selection logic
+# Final ticker selection logic with validation
+ticker = None
+ticker_info = None
+
 if custom_ticker and custom_ticker.strip():
     ticker = custom_ticker.strip().upper()
-    st.info(f"{tr('using_custom_ticker', st.session_state.user_lang)}: **{ticker}**")
+    # Validate ticker format first
+    if not re.match(r'^[A-Za-z0-9\-\._=]+$', ticker):
+        st.error(f"❌ Invalid ticker format: {ticker}")
+        st.info("💡 **Valid formats:** Letters, numbers, hyphens, dots, underscores, and equals signs only")
+        ticker = None
+    else:
+        # Validate ticker exists on Yahoo Finance
+        with st.spinner("🔍 Validating ticker..."):
+            ticker_info = validate_ticker(ticker)
+        
+        if ticker_info["valid"]:
+            st.success(f"✅ **{ticker_info['name']}** ({ticker_info['symbol']})")
+            st.info(f"📊 Exchange: {ticker_info['exchange']} | 💰 Currency: {ticker_info['currency']}")
+            if ticker_info.get('sector'):
+                st.info(f"🏢 Sector: {ticker_info['sector']}")
+        else:
+            st.error(f"❌ {ticker_info['error']}")
+            st.info("💡 **Try:**")
+            st.info("• Check spelling (e.g., AAPL, TSLA, BTC-USD)")
+            st.info("• Use correct exchange suffix (e.g., .TO for Canadian stocks)")
+            st.info("• Verify the ticker exists on Yahoo Finance")
+            ticker = None
 else:
     ticker = selected_ticker
     if ticker:
@@ -3435,6 +3718,11 @@ with controls[4]:
 st.markdown("---")
 
 if run:
+    # Validate ticker before proceeding
+    if not ticker:
+        st.error("Please select or enter a valid ticker symbol.")
+        st.stop()
+    
     # Fetch and process stock data
     with st.spinner(tr("fetching_data", st.session_state.user_lang)):
         df = fetch_yahoo_data(ticker, period, interval)
@@ -3448,8 +3736,37 @@ if run:
     # Get currency information
     currency_code, market = get_currency_info(ticker)
 
+    # Display company information if available
+    if ticker_info and ticker_info.get('valid'):
+        st.markdown("---")
+        st.subheader("🏢 Company Information")
+        info_cols = st.columns([2, 1, 1])
+        with info_cols[0]:
+            st.write(f"**Company:** {ticker_info.get('name', ticker)}")
+            if ticker_info.get('sector'):
+                st.write(f"**Sector:** {ticker_info['sector']}")
+            if ticker_info.get('industry'):
+                st.write(f"**Industry:** {ticker_info['industry']}")
+        with info_cols[1]:
+            st.write(f"**Exchange:** {ticker_info.get('exchange', 'Unknown')}")
+            st.write(f"**Currency:** {ticker_info.get('currency', 'USD')}")
+        with info_cols[2]:
+            if ticker_info.get('market_cap'):
+                market_cap = ticker_info['market_cap']
+                if market_cap > 1e12:
+                    cap_str = f"${market_cap/1e12:.2f}T"
+                elif market_cap > 1e9:
+                    cap_str = f"${market_cap/1e9:.2f}B"
+                elif market_cap > 1e6:
+                    cap_str = f"${market_cap/1e6:.2f}M"
+                else:
+                    cap_str = f"${market_cap:,.0f}"
+                st.write(f"**Market Cap:** {cap_str}")
+
     # Display key metrics
     last = df.iloc[-1]
+    st.markdown("---")
+    st.subheader("📊 Current Market Data")
     metrics_cols = st.columns([1,1,1,1,1])
     with metrics_cols[0]: st.metric(tr("date", st.session_state.user_lang), str(pd.to_datetime(last['Date']).date()))
     with metrics_cols[1]: st.metric(tr("open", st.session_state.user_lang), format_currency(last['Open'], currency_code))
@@ -3460,6 +3777,92 @@ if run:
     # Plot price chart with indicators
     st.subheader(tr("price_chart", st.session_state.user_lang))
     plot_advanced(df, f"{ticker} — {tr('price_chart', st.session_state.user_lang)}", show_indicators)
+
+    # Technical Analysis Section
+    st.markdown("---")
+    st.subheader("📊 Technical Analysis")
+    
+    # Generate technical analysis
+    analysis = generate_technical_analysis(df, ticker)
+    
+    if analysis:
+        # Overall Signal
+        overall_signal = analysis.get('overall', {})
+        if overall_signal:
+            signal_color = {
+                'Strong Buy': '🟢',
+                'Buy': '🟢', 
+                'Hold': '🟡',
+                'Sell': '🔴',
+                'Strong Sell': '🔴'
+            }.get(overall_signal.get('signal', 'Hold'), '🟡')
+            
+            col1, col2, col3 = st.columns([1, 1, 1])
+            with col1:
+                st.metric("Overall Signal", f"{signal_color} {overall_signal.get('signal', 'Hold')}")
+            with col2:
+                st.metric("Technical Score", f"{overall_signal.get('score', 50):.1f}/100")
+            with col3:
+                price_info = analysis.get('price', {})
+                trend_emoji = "📈" if price_info.get('trend') == 'Bullish' else "📉" if price_info.get('trend') == 'Bearish' else "➡️"
+                st.metric("Price Trend", f"{trend_emoji} {price_info.get('trend', 'Neutral')}")
+        
+        # Detailed Analysis
+        analysis_cols = st.columns(2)
+        
+        with analysis_cols[0]:
+            st.markdown("#### 📈 Price & Moving Averages")
+            price_info = analysis.get('price', {})
+            if price_info:
+                st.write(f"**Current Price:** {format_currency(price_info.get('current', 0), currency_code)}")
+                change = price_info.get('change', 0)
+                change_pct = price_info.get('change_pct', 0)
+                change_color = "🟢" if change >= 0 else "🔴"
+                st.write(f"**Change:** {change_color} {format_currency(change, currency_code)} ({change_pct:.2f}%)")
+            
+            ma_info = analysis.get('moving_averages', {})
+            if ma_info:
+                st.write(f"**SMA 20:** {format_currency(ma_info.get('sma_20', 0), currency_code)}")
+                st.write(f"**SMA 50:** {format_currency(ma_info.get('sma_50', 0), currency_code)}")
+                st.write(f"**Signal:** {ma_info.get('signal', 'Neutral')}")
+        
+        with analysis_cols[1]:
+            st.markdown("#### 📊 Technical Indicators")
+            
+            rsi_info = analysis.get('rsi', {})
+            if rsi_info:
+                rsi_value = rsi_info.get('value', 0)
+                rsi_signal = rsi_info.get('signal', 'Neutral')
+                rsi_color = "🔴" if rsi_signal == "Overbought" else "🟢" if rsi_signal == "Oversold" else "🟡"
+                st.write(f"**RSI (14):** {rsi_color} {rsi_value:.1f} - {rsi_signal}")
+            
+            macd_info = analysis.get('macd', {})
+            if macd_info:
+                macd_trend = macd_info.get('trend', 'Neutral')
+                macd_color = "🟢" if macd_trend == "Bullish" else "🔴" if macd_trend == "Bearish" else "🟡"
+                st.write(f"**MACD:** {macd_color} {macd_trend}")
+            
+            bb_info = analysis.get('bollinger_bands', {})
+            if bb_info:
+                bb_signal = bb_info.get('signal', 'Normal')
+                bb_color = "🔴" if bb_signal == "Overbought" else "🟢" if bb_signal == "Oversold" else "🟡"
+                st.write(f"**Bollinger Bands:** {bb_color} {bb_signal}")
+        
+        # Volume Analysis
+        volume_info = analysis.get('volume', {})
+        if volume_info:
+            st.markdown("#### 📊 Volume Analysis")
+            vol_cols = st.columns(3)
+            with vol_cols[0]:
+                st.metric("Current Volume", f"{volume_info.get('current', 0):,}")
+            with vol_cols[1]:
+                st.metric("Avg Volume (20d)", f"{volume_info.get('average', 0):,}")
+            with vol_cols[2]:
+                ratio = volume_info.get('ratio', 1)
+                ratio_color = "🟢" if ratio > 1.5 else "🔴" if ratio < 0.5 else "🟡"
+                st.metric("Volume Ratio", f"{ratio_color} {ratio:.2f}x")
+    else:
+        st.warning("⚠️ Insufficient data for technical analysis. Please try a longer time period.")
 
     # Create two columns for forecasts and news
     forecast_col, news_col = st.columns([1, 1])
