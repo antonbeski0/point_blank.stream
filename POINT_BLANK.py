@@ -98,6 +98,11 @@ For personalized financial guidance, please consult a licensed financial advisor
         "no_articles": "No recent articles found.",
         "export_data": "Export Data",
         "download_csv": "Download Raw Data (CSV)",
+        "search_any_ticker": "Or Search Any Yahoo Finance Ticker",
+        "enter_yahoo_symbol": "Enter any Yahoo Finance symbol",
+        "ticker_placeholder": "e.g., AAPL, BTC-USD, NIFTY, TSLA",
+        "using_custom_ticker": "Using custom ticker",
+        "using_selected_ticker": "Using selected ticker",
         "download_json": "Download Historical Data (JSON)",
         "download_news": "Download News Data (CSV)",
         "recent_data": "Recent Historical Data",
@@ -2777,25 +2782,101 @@ div[data-baseweb="menu"] ul::-webkit-scrollbar-thumb:hover {
 # Data fetching and processing functions
 # --------------------------
 @st.cache_data(ttl=300)
-def fetch_yahoo_data(ticker: str, period="6mo", interval="1d") -> pd.DataFrame:
-    try:
-        t = yf.Ticker(ticker)
-        df = t.history(period=period, interval=interval)
-        if df is None or df.empty:
-            return pd.DataFrame()
-        df = df.reset_index()
-        df['Date'] = pd.to_datetime(df['Date'])
-        try:
-            df['Date'] = df['Date'].dt.tz_localize(None)
-        except Exception:
-            df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None)
-        for col in ['Open','High','Low','Close','Volume']:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-        df = df.dropna(subset=['Date','Close']).reset_index(drop=True)
-        return df
-    except Exception:
+def fetch_yahoo_data(ticker: str, period="6mo", interval="1d", max_retries=3) -> pd.DataFrame:
+    """
+    Fetch historical market data from Yahoo Finance with retry logic and error handling.
+    
+    Args:
+        ticker: Stock symbol to fetch data for
+        period: Time period to fetch (1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max)
+        interval: Data interval (1m, 2m, 5m, 15m, 30m, 60m, 90m, 1h, 1d, 5d, 1wk, 1mo, 3mo)
+        max_retries: Maximum number of retry attempts
+    
+    Returns:
+        pd.DataFrame: DataFrame containing the historical data or empty DataFrame on failure
+    """
+    import time
+    from requests.exceptions import RequestException
+    
+    # Clean the ticker symbol (in case it's in the "SYMBOL — Description" format)
+    m = re.match(r"^([A-Za-z0-9\-\._=]+)", ticker or "")
+    clean_ticker = m.group(1) if m else ticker
+    
+    if not clean_ticker:
+        st.error("No ticker symbol provided")
         return pd.DataFrame()
+    
+    # Set user agent to prevent rate limiting
+    yf.pdr_override()
+    
+    for attempt in range(max_retries):
+        try:
+            # Create Ticker object with timeout
+            t = yf.Ticker(clean_ticker)
+            
+            # Fetch data with timeout
+            df = t.history(period=period, interval=interval, timeout=30)
+            
+            # Validate data
+            if df is None or df.empty:
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)  # Exponential backoff
+                    continue
+                st.warning(f"No data returned for {clean_ticker}. Please check the ticker symbol and try again.")
+                return pd.DataFrame()
+            
+            # Reset index and clean up
+            df = df.reset_index()
+            
+            # Handle date column
+            if 'Date' in df.columns:
+                df['Date'] = pd.to_datetime(df['Date'])
+                try:
+                    if df['Date'].dt.tz is not None:
+                        df['Date'] = df['Date'].dt.tz_convert(None)
+                except Exception:
+                    try:
+                        df['Date'] = df['Date'].dt.tz_localize(None)
+                    except Exception:
+                        pass
+            
+            # Convert numeric columns
+            numeric_cols = ['Open', 'High', 'Low', 'Close', 'Volume', 'Dividends', 'Stock Splits']
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            # Ensure we have required columns
+            required_cols = ['Date', 'Close']
+            if not all(col in df.columns for col in required_cols):
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                st.error(f"Incomplete data received for {clean_ticker}")
+                return pd.DataFrame()
+            
+            # Clean and return data
+            df = df.dropna(subset=['Date', 'Close']).reset_index(drop=True)
+            
+            if df.empty:
+                st.warning(f"No valid data points for {clean_ticker} after cleaning")
+                return pd.DataFrame()
+                
+            return df
+            
+        except RequestException as e:
+            if attempt == max_retries - 1:
+                st.error(f"Network error while fetching data for {clean_ticker}: {str(e)}")
+                return pd.DataFrame()
+            time.sleep(2 ** attempt)
+            
+        except Exception as e:
+            if attempt == max_retries - 1:
+                st.error(f"Error fetching data for {clean_ticker}: {str(e)}")
+                return pd.DataFrame()
+            time.sleep(2 ** attempt)
+    
+    return pd.DataFrame()
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy().reset_index(drop=True)
@@ -3321,7 +3402,27 @@ with controls[0]:
     ticker_selected = st.selectbox(tr("ticker_label", st.session_state.user_lang), tickers_list, index=0)
     # Extract the raw ticker symbol from the selected string (works for both normal symbols and our "SYMBOL — Label" format)
     m = re.match(r"^([A-Za-z0-9\-\._=]+)", ticker_selected or "")
-    ticker = m.group(1) if m else (ticker_selected or "")
+    selected_ticker = m.group(1) if m else (ticker_selected or "")
+
+# --------------------------
+# Custom ticker search
+# --------------------------
+st.markdown("---")  # separator line for clarity
+st.subheader("🔍 " + tr("search_any_ticker", st.session_state.user_lang))
+
+custom_ticker = st.text_input(
+    tr("enter_yahoo_symbol", st.session_state.user_lang),
+    placeholder=tr("ticker_placeholder", st.session_state.user_lang)
+)
+
+# Final ticker selection logic
+if custom_ticker and custom_ticker.strip():
+    ticker = custom_ticker.strip().upper()
+    st.info(f"{tr('using_custom_ticker', st.session_state.user_lang)}: **{ticker}**")
+else:
+    ticker = selected_ticker
+    if ticker:
+        st.info(f"{tr('using_selected_ticker', st.session_state.user_lang)}: **{ticker}**")
 with controls[1]:
     period = st.selectbox(tr("period_label", st.session_state.user_lang), ["1mo","3mo","6mo","1y","2y","5y","10y","max"], index=2)
 with controls[2]:
