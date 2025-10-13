@@ -3599,7 +3599,7 @@ st.markdown("---")
 # Base tickers list
 tickers_list = [
     # 🌎 Americas - Stocks
-    "AAPL","MSFT","AMZN","TSLA","JPM",   # New York
+    "   ","AAPL","MSFT","AMZN","TSLA","JPM",   # New York
     "RY.TO","SHOP.TO","ENB.TO","ABX.TO", # Toronto
     "VALE","PBR","ITUB","BBD",         # São Paulo
     "BMA","GGAL","PAM","YPF",          # Buenos Aires
@@ -4028,3 +4028,4 @@ else:
     with status_cols[3]:
         status = f"✅ {tr('available', st.session_state.user_lang)}" if HAS_TF else f"❌ {tr('missing', st.session_state.user_lang)}"
         st.markdown(f"**{tr('lstm', st.session_state.user_lang)}:** {status}")
+
