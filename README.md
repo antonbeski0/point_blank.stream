@@ -6,7 +6,7 @@ Multi-language stock analysis and forecasting application.
 
 ```bash
 pip install -r requirements.txt
-streamlit run app.py
+streamlit run POINT_BLANK.py
 Features
 Real-time stock data
 
