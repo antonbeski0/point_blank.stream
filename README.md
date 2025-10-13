@@ -24,7 +24,7 @@ News integration
 
 ## GitHub Repository Structure
 pointblank-app/
-├── app.py
+├── POINT_BLANK.py
 ├── requirements.txt
 ├── .gitignore
 └── README.md
