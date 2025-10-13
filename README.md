@@ -6,7 +6,7 @@ Multi-language stock analysis and forecasting application.
 
 ```bash
 pip install -r requirements.txt
-streamlit run POINT_BLANK.py
+streamlit run point_blank.py
 Features
 Real-time stock data
 
@@ -24,7 +24,7 @@ News integration
 
 ## GitHub Repository Structure
 pointblank-app/
-├── POINT_BLANK.py
+├── point_blank.py
 ├── requirements.txt
 ├── .gitignore
 └── README.md
