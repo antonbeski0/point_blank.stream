@@ -3925,12 +3925,51 @@ if run:
         
         # Language mapping for news API
         lang_map = {
-            "en": ("en-US", "US", "US:en"),
-            "es": ("es-ES", "ES", "ES:es"),
-            "fr": ("fr-FR", "FR", "FR:fr"),
-            "pt": ("pt-BR", "BR", "BR:pt"),
-            "ta": ("ta-IN", "IN", "IN:ta"),
-        }
+    "en": ("en-US", "US", "US:en"),
+    "es": ("es-ES", "ES", "ES:es"),
+    "fr": ("fr-FR", "FR", "FR:fr"),
+    "pt": ("pt-BR", "BR", "BR:pt"),
+    "ta": ("ta-IN", "IN", "IN:ta"),
+    "de": ("de-DE", "DE", "DE:de"),
+    "it": ("it-IT", "IT", "IT:it"),
+    "el": ("el-GR", "GR", "GR:el"),
+    "fi": ("fi-FI", "FI", "FI:fi"),
+    "sv": ("sv-SE", "SE", "SE:sv"),
+    "pl": ("pl-PL", "PL", "PL:pl"),
+    "tr": ("tr-TR", "TR", "TR:tr"),
+    "ar": ("ar-SA", "SA", "SA:ar"),
+    "zu": ("zu-ZA", "ZA", "ZA:zu"),
+    "xh": ("xh-ZA", "ZA", "ZA:xh"),
+    "af": ("af-ZA", "ZA", "ZA:af"),
+    "nso": ("nso-ZA", "ZA", "ZA:nso"),
+    "tn": ("tn-BW", "BW", "BW:tn"),
+    "st": ("st-ZA", "ZA", "ZA:st"),
+    "ts": ("ts-ZA", "ZA", "ZA:ts"),
+    "ss": ("ss-ZA", "ZA", "ZA:ss"),
+    "ve": ("ve-ZA", "ZA", "ZA:ve"),
+    "nr": ("nr-ZA", "ZA", "ZA:nr"),
+    "sw": ("sw-KE", "KE", "KE:sw"),
+    "ber": ("ber-MA", "MA", "MA:ber"),
+    "he": ("he-IL", "IL", "IL:he"),
+    "ur": ("ur-PK", "PK", "PK:ur"),
+    "hi": ("hi-IN", "IN", "IN:hi"),
+    "ne": ("ne-NP", "NP", "NP:ne"),
+    "bn": ("bn-IN", "IN", "IN:bn"),
+    "si": ("si-LK", "LK", "LK:si"),
+    "th": ("th-TH", "TH", "TH:th"),
+    "ms": ("ms-MY", "MY", "MY:ms"),
+    "id": ("id-ID", "ID", "ID:id"),
+    "zh": ("zh-CN", "CN", "CN:zh"),
+    "ja": ("ja-JP", "JP", "JP:ja"),
+    "ko": ("ko-KR", "KR", "KR:ko"),
+    "kk": ("kk-KZ", "KZ", "KZ:kk"),
+    "ru": ("ru-RU", "RU", "RU:ru"),
+    "uz": ("uz-UZ", "UZ", "UZ:uz"),
+    "mn": ("mn-MN", "MN", "MN:mn"),
+    "my": ("my-MM", "MM", "MM:my"),
+    "mi": ("mi-NZ", "NZ", "NZ:mi"),
+}
+
         
         hl, gl, ceid = lang_map.get(st.session_state.user_lang, ("en-US", "US", "US:en"))
         
@@ -4028,5 +4067,6 @@ else:
     with status_cols[3]:
         status = f" {tr('available', st.session_state.user_lang)}" if HAS_TF else f" {tr('missing', st.session_state.user_lang)}"
         st.markdown(f"**{tr('lstm', st.session_state.user_lang)}:** {status}")
+
 
 
