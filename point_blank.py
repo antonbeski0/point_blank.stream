@@ -52,12 +52,6 @@ except:
     MinMaxScaler = None
 
 try:
-    import joblib
-    HAS_JOBLIB = True
-except:
-    HAS_JOBLIB = False
-
-try:
     import tensorflow as tf
     from tensorflow import keras
     from tensorflow.keras import layers
@@ -2829,8 +2823,8 @@ def fetch_yahoo_data(ticker: str, period="6mo", interval="1d", max_retries=3) ->
                     st.warning(f"Attempt {attempt + 1} failed for {clean_ticker}. Retrying...")
                     time.sleep(2 ** attempt)  # Exponential backoff
                     continue
-                st.error(f"No data returned for {clean_ticker} after {max_retries} attempts.")
-                st.info("Troubleshooting tips:")
+                st.error(f"❌ No data returned for {clean_ticker} after {max_retries} attempts.")
+                st.info("💡 **Troubleshooting tips:**")
                 st.info("• Check if the ticker symbol is correct (e.g., AAPL, TSLA, BTC-USD)")
                 st.info("• Try different ticker formats (e.g., .TO for Canadian stocks)")
                 st.info("• Verify the ticker exists on Yahoo Finance")
@@ -2878,9 +2872,9 @@ def fetch_yahoo_data(ticker: str, period="6mo", interval="1d", max_retries=3) ->
             
         except RequestException as e:
             if attempt == max_retries - 1:
-                st.error(f"Network error while fetching data for {clean_ticker}")
+                st.error(f"🌐 Network error while fetching data for {clean_ticker}")
                 st.error(f"Error details: {str(e)}")
-                st.info("Network troubleshooting:")
+                st.info("💡 **Network troubleshooting:**")
                 st.info("• Check your internet connection")
                 st.info("• Try again in a few moments")
                 st.info("• The Yahoo Finance API might be temporarily unavailable")
@@ -2890,9 +2884,9 @@ def fetch_yahoo_data(ticker: str, period="6mo", interval="1d", max_retries=3) ->
             
         except Exception as e:
             if attempt == max_retries - 1:
-                st.error(f"Unexpected error while fetching data for {clean_ticker}")
+                st.error(f"❌ Unexpected error while fetching data for {clean_ticker}")
                 st.error(f"Error details: {str(e)}")
-                st.info("Please try:")
+                st.info("💡 **Please try:**")
                 st.info("• Verifying the ticker symbol is correct")
                 st.info("• Using a different ticker format")
                 st.info("• Refreshing the page and trying again")
@@ -2923,101 +2917,6 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df['RSI'] = 100 - (100 / (1 + rs))
     df['RSI'] = df['RSI'].clip(0,100).fillna(50)
     return df
-
-# --------------------------
-# Leak-free features and metrics
-# --------------------------
-def create_proper_features(df: pd.DataFrame, max_lag: int = 10) -> pd.DataFrame:
-    """Create strictly lagged features to avoid lookahead leakage.
-
-    - Only uses values available at time t-1 or earlier
-    - Rolling statistics are shifted by 1
-    """
-    d = df.copy().reset_index(drop=True)
-    # Basic lags
-    for lag in range(1, max_lag + 1):
-        d[f'lag_{lag}'] = d['Close'].shift(lag)
-    # Volume moving average (lagged)
-    if 'Volume' in d.columns:
-        d['volume_ma_5'] = d['Volume'].rolling(5).mean().shift(1)
-        d['volume_ma_20'] = d['Volume'].rolling(20).mean().shift(1)
-    # Price moving averages (lagged)
-    d['sma_10'] = d['Close'].rolling(10).mean().shift(1)
-    d['sma_20'] = d['Close'].rolling(20).mean().shift(1)
-    d['ema_12'] = d['Close'].ewm(span=12, adjust=False).mean().shift(1)
-    d['ema_26'] = d['Close'].ewm(span=26, adjust=False).mean().shift(1)
-    # RSI and MACD computed from past only, then shifted
-    delta = d['Close'].diff()
-    up = delta.clip(lower=0)
-    down = -delta.clip(upper=0)
-    roll_up = up.rolling(14).mean()
-    roll_down = down.rolling(14).mean()
-    rs = roll_up / (roll_down + 1e-8)
-    d['rsi_14'] = (100 - (100 / (1 + rs))).clip(0, 100).shift(1)
-    ema12 = d['Close'].ewm(span=12, adjust=False).mean()
-    ema26 = d['Close'].ewm(span=26, adjust=False).mean()
-    macd = ema12 - ema26
-    signal = macd.ewm(span=9, adjust=False).mean()
-    d['macd'] = macd.shift(1)
-    d['macd_signal'] = signal.shift(1)
-    # Target
-    d['y'] = d['Close']
-    d = d.dropna().reset_index(drop=True)
-    return d
-
-def _ensure_dir(path: str) -> str:
-    import os
-    if not os.path.exists(path):
-        os.makedirs(path, exist_ok=True)
-    return path
-
-def get_model_store_dir() -> str:
-    return _ensure_dir(".seek_models")
-
-def get_data_store_dir() -> str:
-    return _ensure_dir(".seek_data")
-
-def calculate_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
-    y_true = np.asarray(y_true, dtype=float)
-    y_pred = np.asarray(y_pred, dtype=float)
-    if len(y_true) == 0 or len(y_true) != len(y_pred):
-        return {"MAPE": np.nan, "RMSE": np.nan, "MAE": np.nan, "R2": np.nan}
-    mape = float(np.mean(np.abs((y_true - y_pred) / np.clip(y_true, 1e-8, None))) * 100.0)
-    rmse = float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
-    mae = float(np.mean(np.abs(y_true - y_pred)))
-    # Safe R2
-    try:
-        ss_res = np.sum((y_true - y_pred) ** 2)
-        ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
-        r2 = float(1 - ss_res / ss_tot) if ss_tot > 0 else np.nan
-    except Exception:
-        r2 = np.nan
-    return {"MAPE": mape, "RMSE": rmse, "MAE": mae, "R2": r2}
-
-def walk_forward_backtest_series(y: np.ndarray, X: np.ndarray, model_builder, initial_window: int, step: int = 1) -> dict:
-    """Generic walk-forward backtest for regressors.
-
-    model_builder: () -> fitted model instance supporting fit(X, y) and predict(X)
-    """
-    preds = []
-    trues = []
-    n = len(y)
-    start = max(initial_window, 20)
-    for t in range(start, n, step):
-        X_train, y_train = X[:t], y[:t]
-        X_test, y_test = X[t:t+step], y[t:t+step]
-        if len(X_test) == 0:
-            break
-        try:
-            model = model_builder()
-            model.fit(X_train, y_train)
-            y_hat = model.predict(X_test)
-        except Exception:
-            break
-        preds.extend(list(np.asarray(y_hat).ravel()))
-        trues.extend(list(y_test))
-    metrics = calculate_metrics(np.array(trues), np.array(preds))
-    return {"y_true": np.array(trues), "y_pred": np.array(preds), "metrics": metrics}
 
 def plot_advanced(df: pd.DataFrame, title: str, show_indicators: bool = True):
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
@@ -3173,73 +3072,38 @@ def forecast_all(df: pd.DataFrame, periods: int = 30):
                 order = (5, 1, 0)  # fallback
 
             model = ARIMA(series, order=order).fit()
-            # Use get_forecast to obtain confidence intervals when available
-            try:
-                res = model.get_forecast(steps=periods)
-                mean = res.predicted_mean
-                ci = res.conf_int(alpha=0.05)
-                lower = ci.iloc[:, 0]
-                upper = ci.iloc[:, 1]
-                dates = pd.date_range(start=series.index[-1] + timedelta(days=1), periods=periods)
-                forecasts['ARIMA'] = pd.DataFrame({'Date': dates, 'yhat': mean.values, 'yhat_lower': lower.values, 'yhat_upper': upper.values})
-            except Exception:
-                fc = model.forecast(steps=periods)
-                dates = pd.date_range(start=series.index[-1] + timedelta(days=1), periods=periods)
-                forecasts['ARIMA'] = pd.DataFrame({'Date': dates, 'yhat': fc.values})
+            fc = model.forecast(steps=periods)
+            dates = pd.date_range(start=series.index[-1] + timedelta(days=1), periods=periods)
+            forecasts['ARIMA'] = pd.DataFrame({'Date': dates, 'yhat': fc.values})
 
         except Exception as e:
             st.error(f"{tr('arima_error', st.session_state.user_lang)}: {e}")
 
     # ==============================
-    # RandomForest Forecast (leak-free)
+    # RandomForest Forecast
     # ==============================
     if HAS_SKLEARN:
         try:
-            features = create_proper_features(df, max_lag=min(10, max(3, len(df)//10)))
-            lag_cols = [c for c in features.columns if c.startswith('lag_')]
-            extra_cols = [c for c in ['volume_ma_5','volume_ma_20','sma_10','sma_20','ema_12','ema_26','rsi_14','macd','macd_signal'] if c in features.columns]
-            X = features[lag_cols + extra_cols].values
-            y = features['y'].values
+            data = df[['Close']].copy()
+            n_lags = min(10, len(data)//2)  # dynamic lag selection for small datasets
 
-            # Walk-forward validation
-            def _rf_builder():
-                return RandomForestRegressor(n_estimators=400, random_state=42, n_jobs=-1)
+            for lag in range(1, n_lags+1):
+                data[f'lag_{lag}'] = data['Close'].shift(lag)
+            data = data.dropna()
 
-            wf = walk_forward_backtest_series(y, X, _rf_builder, initial_window=max(50, int(len(y) * 0.6)))
-            st.session_state['rf_metrics'] = wf['metrics']
+            X = data[[f'lag_{i}' for i in range(1, n_lags+1)]].values
+            y = data['Close'].values
 
-            # Fit on full data for forecasting; try load/save
-            model = None
-            if HAS_JOBLIB:
-                import os
-                model_dir = get_model_store_dir()
-                key = f"rf_{hash(tuple([len(X), X.shape[1]]))}"
-                model_path = os.path.join(model_dir, f"{key}.joblib")
-                if os.path.exists(model_path):
-                    try:
-                        model = joblib.load(model_path)
-                    except Exception:
-                        model = None
-                if model is None:
-                    model = _rf_builder()
-                    model.fit(X, y)
-                    try:
-                        joblib.dump(model, model_path)
-                    except Exception:
-                        pass
-            else:
-                model = _rf_builder()
-                model.fit(X, y)
+            model = RandomForestRegressor(n_estimators=500, max_depth=None, random_state=42, n_jobs=-1)
+            model.fit(X, y)
 
-            # Iterative forecast uses only predicted values for future lags
-            last_row = features.iloc[-1]
-            last_lags = [last_row[f'lag_{i}'] for i in range(1, len(lag_cols)+1)]
+            # Iterative multi-step forecast
+            last_window = X[-1].tolist()
             preds = []
-            window = list(last_lags)
             for _ in range(periods):
-                p = float(model.predict([window + [last_row.get(c, window[0]) for c in extra_cols]]))
+                p = float(model.predict([last_window]))
                 preds.append(p)
-                window = [p] + window[:-1]
+                last_window = [p] + last_window[:-1]
 
             dates = pd.date_range(start=df['Date'].iloc[-1] + timedelta(days=1), periods=periods)
             forecasts['RandomForest'] = pd.DataFrame({'Date': dates, 'yhat': preds})
@@ -3248,34 +3112,33 @@ def forecast_all(df: pd.DataFrame, periods: int = 30):
             st.error(f"{tr('rf_error', st.session_state.user_lang)}: {e}")
 
     # ==============================
-    # Enhanced LSTM (completed, leak-aware)
+    # Enhanced LSTM
     # ==============================
     if HAS_TF and HAS_SKLEARN:
         try:
-            # Build leak-free feature set (lags and lagged indicators)
-            d = create_proper_features(df, max_lag=min(20, max(5, len(df)//10)))
-            feature_cols = [c for c in d.columns if c.startswith('lag_')] + [
-                c for c in ['volume_ma_5','volume_ma_20','sma_10','sma_20','ema_12','ema_26','rsi_14','macd','macd_signal'] if c in d.columns
-            ]
-            data_mat = d[feature_cols].fillna(method='ffill').fillna(method='bfill').values
-            target = d['y'].values
+            features_df = df.copy()
+            feature_cols = ['Close', 'Volume', 'High', 'Low', 'Open']
+            extra_cols = ['RSI', 'MACD', 'MA20', 'MA50']
+            feature_cols.extend([c for c in extra_cols if c in df.columns])
+
+            feature_data = features_df[feature_cols].fillna(method='ffill').fillna(method='bfill')
 
             scaler = MinMaxScaler()
-            scaled_X = scaler.fit_transform(data_mat)
-            y_scaler = MinMaxScaler()
-            scaled_y = y_scaler.fit_transform(target.reshape(-1,1)).ravel()
+            scaled_data = scaler.fit_transform(feature_data)
 
             # Adjust sequence length for small datasets
             default_sequence_length = 60
-            sequence_length = min(default_sequence_length, max(10, len(scaled_X) // 5))
+            sequence_length = min(default_sequence_length, len(scaled_data) // 2)
             if sequence_length < 10:
                 st.warning(tr('lstm_warning1', st.session_state.user_lang))
                 forecasts['LSTM'] = None
             else:
                 X_sequences, y_sequences = [], []
-                for i in range(sequence_length, len(scaled_X)):
-                    X_sequences.append(scaled_X[i - sequence_length:i])
-                    y_sequences.append(scaled_y[i])
+
+                for i in range(sequence_length, len(scaled_data)):
+                    X_sequences.append(scaled_data[i - sequence_length:i])
+                    y_sequences.append(scaled_data[i, 0])  # Close price
+
                 X_sequences, y_sequences = np.array(X_sequences), np.array(y_sequences)
 
                 # Skip if still too few sequences
@@ -3291,11 +3154,18 @@ def forecast_all(df: pd.DataFrame, periods: int = 30):
                     tf.keras.backend.clear_session()
 
                     model = Sequential([
-                        LSTM(64, return_sequences=True, input_shape=(sequence_length, X_sequences.shape[-1])),
-                        Dropout(0.2),
+                        LSTM(128, return_sequences=True, input_shape=(sequence_length, len(feature_cols))),
+                        Dropout(0.3),
                         BatchNormalization(),
+
+                        Bidirectional(LSTM(64, return_sequences=True)),
+                        Dropout(0.3),
+                        BatchNormalization(),
+
                         LSTM(32, return_sequences=False),
                         Dropout(0.2),
+
+                        Dense(64, activation='relu'),
                         Dense(32, activation='relu'),
                         Dense(1, activation='linear')
                     ])
@@ -3313,7 +3183,7 @@ def forecast_all(df: pd.DataFrame, periods: int = 30):
                         callbacks.ModelCheckpoint("best_lstm.h5", save_best_only=True, monitor="val_loss")
                     ]
 
-                    history = model.fit(
+                    model.fit(
                         X_train, y_train,
                         epochs=100,
                         batch_size=32,
@@ -3321,23 +3191,28 @@ def forecast_all(df: pd.DataFrame, periods: int = 30):
                         callbacks=callbacks_list,
                         verbose=0
                     )
-                    # Validation metrics
-                    y_val_pred = model.predict(X_test, verbose=0).ravel()
-                    st.session_state['lstm_metrics'] = calculate_metrics(y_test, y_val_pred)
 
-                    # Iterative forecasting from last available window
-                    last_sequence = scaled_X[-sequence_length:]
+                    # Iterative forecasting
+                    last_sequence = scaled_data[-sequence_length:]
                     predictions_scaled = []
+
                     for _ in range(periods):
-                        seq_input = last_sequence.reshape(1, sequence_length, last_sequence.shape[-1])
+                        seq_input = last_sequence.reshape(1, sequence_length, len(feature_cols))
                         pred_scaled = float(model.predict(seq_input, verbose=0)[0, 0])
                         predictions_scaled.append(pred_scaled)
+
                         new_row = last_sequence[-1].copy()
-                        new_row[...] = new_row  # retain last covariates
+                        new_row[0] = pred_scaled
                         last_sequence = np.vstack([last_sequence[1:], new_row])
 
-                    # Inverse-transform predictions using y_scaler
-                    predictions = y_scaler.inverse_transform(np.array(predictions_scaled).reshape(-1,1)).ravel().tolist()
+                    # Inverse scaling
+                    pred_array = np.zeros((periods, len(feature_cols)))
+                    pred_array[:, 0] = predictions_scaled
+                    for i in range(1, len(feature_cols)):
+                        pred_array[:, i] = scaled_data[-1, i]
+
+                    pred_inverse = scaler.inverse_transform(pred_array)
+                    predictions = pred_inverse[:, 0].tolist()
 
                     dates = pd.date_range(start=df['Date'].iloc[-1] + timedelta(days=1), periods=periods)
                     forecasts['LSTM'] = pd.DataFrame({'Date': dates, 'yhat': predictions})
@@ -3723,7 +3598,7 @@ st.markdown("---")
 
 # Base tickers list
 tickers_list = [
-    # Americas - Stocks
+    # 🌎 Americas - Stocks
     "AAPL","MSFT","AMZN","TSLA","JPM",   # New York
     "RY.TO","SHOP.TO","ENB.TO","ABX.TO", # Toronto
     "VALE","PBR","ITUB","BBD",         # São Paulo
@@ -3733,7 +3608,7 @@ tickers_list = [
     "B3SA3.SA","ITUB4.SA","PETR4.SA",   # São Paulo (B3)
     "MELI","BIDU","PAGS","BBDC4.SA",   # Other Americas
 
-    # Europe - Stocks
+    # 🌍 Europe - Stocks
     "SAP.DE","SIE.DE","DTE.DE","VOW3.DE",  # Frankfurt
     "SHEL","HSBA.L","BP.L","ULVR.L",    # London
     "AIR.PA","SAN.PA","OR.PA","MC.PA",   # Paris
@@ -3745,7 +3620,7 @@ tickers_list = [
     "ROG.SW","NOVN.SW","NESN.SW","UBSG.SW", # Zurich
     "KER.PA","AI.PA","CAP.PA","BNP.PA",  # Other Europe
 
-    # Asia & Oceania - Stocks
+    # 🌏 Asia & Oceania - Stocks
     "005930.KS","000660.KS","035420.KS",   # Seoul
     "7203.T","9984.T","9433.T","8035.T",  # Tokyo
     "BABA","TCEHY","JD","BIDU",          # China/HK (US-listed)
@@ -3758,25 +3633,25 @@ tickers_list = [
     "PTT.BK","CPALL.BK","ADVANC.BK",      # Bangkok
     "FMI.MM","MTSH.MM",                  # Yangon
 
-    # Oceania - Stocks
+    # 🌊 Oceania - Stocks
     "BHP.AX","CBA.AX","CSL.AX","WBC.AX", # Australia
     "AIA.NZ","SPK.NZ","FPH.NZ",          # New Zealand
 
-    # Americas - Currencies
+    # 🌎 Americas - Currencies
     "USD=X","CAD=X","MXN=X","BRL=X","ARS=X","CLP=X","PEN=X","COP=X",
 
-    # Europe & Africa - Currencies
+    # 🌍 Europe & Africa - Currencies
     "GBP=X","EUR=X","PLN=X","TRY=X","EGP=X","ZAR=X","KES=X","NGN=X","MAD=X",
 
-    # Middle East & Asia - Currencies
+    # 🌏 Middle East & Asia - Currencies
     "AED=X","ILS=X","JOD=X","PKR=X","INR=X","NPR=X","BDT=X","LKR=X","THB=X",
     "SGD=X","MYR=X","IDR=X","CNY=X","TWD=X","JPY=X","KRW=X","KZT=X","UZS=X",
     "MNT=X","MMK=X",
 
-    # Oceania - Currencies
+    # 🌊 Oceania - Currencies
     "AUD=X","NZD=X",
 
-    # Crypto
+    # 🪙 Crypto
     "BTC-USD","ETH-USD"
 ]
 
@@ -3792,7 +3667,7 @@ with controls[0]:
 # Custom ticker search
 # --------------------------
 st.markdown("---")  # separator line for clarity
-st.subheader("Search" + " — " + tr("search_any_ticker", st.session_state.user_lang))
+st.subheader("🔍 " + tr("search_any_ticker", st.session_state.user_lang))
 
 custom_ticker = st.text_input(
     tr("enter_yahoo_symbol", st.session_state.user_lang),
@@ -3807,22 +3682,22 @@ if custom_ticker and custom_ticker.strip():
     ticker = custom_ticker.strip().upper()
     # Validate ticker format first
     if not re.match(r'^[A-Za-z0-9\-\._=]+$', ticker):
-        st.error(f"Invalid ticker format: {ticker}")
-        st.info("Valid formats: Letters, numbers, hyphens, dots, underscores, and equals signs only")
+        st.error(f"❌ Invalid ticker format: {ticker}")
+        st.info("💡 **Valid formats:** Letters, numbers, hyphens, dots, underscores, and equals signs only")
         ticker = None
     else:
         # Validate ticker exists on Yahoo Finance
-        with st.spinner("Validating ticker..."):
+        with st.spinner("🔍 Validating ticker..."):
             ticker_info = validate_ticker(ticker)
         
         if ticker_info["valid"]:
-            st.success(f"{ticker_info['name']} ({ticker_info['symbol']})")
-            st.info(f"Exchange: {ticker_info['exchange']} | Currency: {ticker_info['currency']}")
+            st.success(f"✅ **{ticker_info['name']}** ({ticker_info['symbol']})")
+            st.info(f"📊 Exchange: {ticker_info['exchange']} | 💰 Currency: {ticker_info['currency']}")
             if ticker_info.get('sector'):
-                st.info(f"Sector: {ticker_info['sector']}")
+                st.info(f"🏢 Sector: {ticker_info['sector']}")
         else:
-            st.error(f"{ticker_info['error']}")
-            st.info("Try:")
+            st.error(f"❌ {ticker_info['error']}")
+            st.info("💡 **Try:**")
             st.info("• Check spelling (e.g., AAPL, TSLA, BTC-USD)")
             st.info("• Use correct exchange suffix (e.g., .TO for Canadian stocks)")
             st.info("• Verify the ticker exists on Yahoo Finance")
@@ -3839,20 +3714,6 @@ with controls[3]:
     show_indicators = st.checkbox(tr("indicators_label", st.session_state.user_lang), value=True)
 with controls[4]:
     run = st.button(tr("run_button", st.session_state.user_lang), type="primary")
-
-# Sidebar: model customization
-with st.sidebar:
-    st.markdown("### Model Settings")
-    forecast_horizon = st.slider("Forecast horizon (days)", min_value=5, max_value=90, value=30, step=5)
-    models_selected = st.multiselect(
-        "Models to run",
-        options=["Prophet", "ARIMA", "RandomForest", "LSTM"],
-        default=["Prophet", "ARIMA", "RandomForest", "LSTM"]
-    )
-    st.markdown("---")
-    st.markdown("### Risk/Portfolio")
-    enable_portfolio = st.checkbox("Enable simple portfolio tracking", value=False)
-    initial_cash = st.number_input("Initial cash ($)", min_value=0.0, value=10000.0, step=100.0)
 
 st.markdown("---")
 
@@ -3878,7 +3739,7 @@ if run:
     # Display company information if available
     if ticker_info and ticker_info.get('valid'):
         st.markdown("---")
-        st.subheader("Company Information")
+        st.subheader("🏢 Company Information")
         info_cols = st.columns([2, 1, 1])
         with info_cols[0]:
             st.write(f"**Company:** {ticker_info.get('name', ticker)}")
@@ -3905,7 +3766,7 @@ if run:
     # Display key metrics
     last = df.iloc[-1]
     st.markdown("---")
-    st.subheader("Current Market Data")
+    st.subheader("📊 Current Market Data")
     metrics_cols = st.columns([1,1,1,1,1])
     with metrics_cols[0]: st.metric(tr("date", st.session_state.user_lang), str(pd.to_datetime(last['Date']).date()))
     with metrics_cols[1]: st.metric(tr("open", st.session_state.user_lang), format_currency(last['Open'], currency_code))
@@ -3919,7 +3780,7 @@ if run:
 
     # Technical Analysis Section
     st.markdown("---")
-    st.subheader("Technical Analysis")
+    st.subheader("📊 Technical Analysis")
     
     # Generate technical analysis
     analysis = generate_technical_analysis(df, ticker)
@@ -3928,26 +3789,36 @@ if run:
         # Overall Signal
         overall_signal = analysis.get('overall', {})
         if overall_signal:
+            signal_color = {
+                'Strong Buy': '🟢',
+                'Buy': '🟢', 
+                'Hold': '🟡',
+                'Sell': '🔴',
+                'Strong Sell': '🔴'
+            }.get(overall_signal.get('signal', 'Hold'), '🟡')
+            
             col1, col2, col3 = st.columns([1, 1, 1])
             with col1:
-                st.metric("Overall Signal", overall_signal.get('signal', 'Hold'))
+                st.metric("Overall Signal", f"{signal_color} {overall_signal.get('signal', 'Hold')}")
             with col2:
                 st.metric("Technical Score", f"{overall_signal.get('score', 50):.1f}/100")
             with col3:
                 price_info = analysis.get('price', {})
-                st.metric("Price Trend", price_info.get('trend', 'Neutral'))
+                trend_emoji = "📈" if price_info.get('trend') == 'Bullish' else "📉" if price_info.get('trend') == 'Bearish' else "➡️"
+                st.metric("Price Trend", f"{trend_emoji} {price_info.get('trend', 'Neutral')}")
         
         # Detailed Analysis
         analysis_cols = st.columns(2)
         
         with analysis_cols[0]:
-            st.markdown("#### Price and Moving Averages")
+            st.markdown("#### 📈 Price & Moving Averages")
             price_info = analysis.get('price', {})
             if price_info:
                 st.write(f"**Current Price:** {format_currency(price_info.get('current', 0), currency_code)}")
                 change = price_info.get('change', 0)
                 change_pct = price_info.get('change_pct', 0)
-                st.write(f"**Change:** {format_currency(change, currency_code)} ({change_pct:.2f}%)")
+                change_color = "🟢" if change >= 0 else "🔴"
+                st.write(f"**Change:** {change_color} {format_currency(change, currency_code)} ({change_pct:.2f}%)")
             
             ma_info = analysis.get('moving_averages', {})
             if ma_info:
@@ -3956,28 +3827,31 @@ if run:
                 st.write(f"**Signal:** {ma_info.get('signal', 'Neutral')}")
         
         with analysis_cols[1]:
-            st.markdown("#### Technical Indicators")
+            st.markdown("#### 📊 Technical Indicators")
             
             rsi_info = analysis.get('rsi', {})
             if rsi_info:
                 rsi_value = rsi_info.get('value', 0)
                 rsi_signal = rsi_info.get('signal', 'Neutral')
-                st.write(f"**RSI (14):** {rsi_value:.1f} - {rsi_signal}")
+                rsi_color = "🔴" if rsi_signal == "Overbought" else "🟢" if rsi_signal == "Oversold" else "🟡"
+                st.write(f"**RSI (14):** {rsi_color} {rsi_value:.1f} - {rsi_signal}")
             
             macd_info = analysis.get('macd', {})
             if macd_info:
                 macd_trend = macd_info.get('trend', 'Neutral')
-                st.write(f"**MACD:** {macd_trend}")
+                macd_color = "🟢" if macd_trend == "Bullish" else "🔴" if macd_trend == "Bearish" else "🟡"
+                st.write(f"**MACD:** {macd_color} {macd_trend}")
             
             bb_info = analysis.get('bollinger_bands', {})
             if bb_info:
                 bb_signal = bb_info.get('signal', 'Normal')
-                st.write(f"**Bollinger Bands:** {bb_signal}")
+                bb_color = "🔴" if bb_signal == "Overbought" else "🟢" if bb_signal == "Oversold" else "🟡"
+                st.write(f"**Bollinger Bands:** {bb_color} {bb_signal}")
         
         # Volume Analysis
         volume_info = analysis.get('volume', {})
         if volume_info:
-            st.markdown("#### Volume Analysis")
+            st.markdown("#### 📊 Volume Analysis")
             vol_cols = st.columns(3)
             with vol_cols[0]:
                 st.metric("Current Volume", f"{volume_info.get('current', 0):,}")
@@ -3985,9 +3859,10 @@ if run:
                 st.metric("Avg Volume (20d)", f"{volume_info.get('average', 0):,}")
             with vol_cols[2]:
                 ratio = volume_info.get('ratio', 1)
-                st.metric("Volume Ratio", f"{ratio:.2f}x")
+                ratio_color = "🟢" if ratio > 1.5 else "🔴" if ratio < 0.5 else "🟡"
+                st.metric("Volume Ratio", f"{ratio_color} {ratio:.2f}x")
     else:
-        st.warning("Insufficient data for technical analysis. Please try a longer time period.")
+        st.warning("⚠️ Insufficient data for technical analysis. Please try a longer time period.")
 
     # Create two columns for forecasts and news
     forecast_col, news_col = st.columns([1, 1])
@@ -3995,24 +3870,9 @@ if run:
     with forecast_col:
         st.subheader(tr("ai_forecasts", st.session_state.user_lang))
         with st.spinner(tr("running_models", st.session_state.user_lang)):
-            forecasts_all = forecast_all(df, periods=forecast_horizon)
-            # Filter by selection
-            forecasts = {k: v for k, v in forecasts_all.items() if k in set(models_selected)}
+            forecasts = forecast_all(df, periods=30)
         
         if forecasts:
-            # Optional: show validation metrics if available
-            met_cols = st.columns(2)
-            with met_cols[0]:
-                rf_m = st.session_state.get('rf_metrics')
-                if rf_m:
-                    st.caption("RandomForest validation")
-                    st.write({k: (None if v is None else (round(v, 4) if isinstance(v, float) else v)) for k, v in rf_m.items()})
-            with met_cols[1]:
-                lstm_m = st.session_state.get('lstm_metrics')
-                if lstm_m:
-                    st.caption("LSTM validation")
-                    st.write({k: (None if v is None else (round(v, 4) if isinstance(v, float) else v)) for k, v in lstm_m.items()})
-
             for model_name, fc in forecasts.items():
                 if fc is not None:
                     with st.expander(f" {tr(model_name.lower(), st.session_state.user_lang)} {tr('model', st.session_state.user_lang)}", expanded=False):
@@ -4034,7 +3894,7 @@ if run:
                         fig.add_trace(go.Scatter(x=fc['Date'], y=fc['yhat'], 
                                                name=f'{tr(model_name.lower(), st.session_state.user_lang)} {tr("forecast", st.session_state.user_lang)}', line=dict(color='#4DA6FF')))
                         
-                        if model_name in ("Prophet","ARIMA") and 'yhat_lower' in fc.columns and 'yhat_upper' in fc.columns:
+                        if model_name == "Prophet" and 'yhat_lower' in fc.columns and 'yhat_upper' in fc.columns:
                             fig.add_trace(go.Scatter(x=fc['Date'], y=fc['yhat_lower'], 
                                                    name=tr('lower_bound', st.session_state.user_lang), line=dict(dash='dot', color='#666')))
                             fig.add_trace(go.Scatter(x=fc['Date'], y=fc['yhat_upper'], 
@@ -4044,7 +3904,7 @@ if run:
                                         paper_bgcolor='#000000', plot_bgcolor='#000000')
                         st.plotly_chart(fig, use_container_width=True, theme=None)
                         
-                        st.download_button(f"Download {tr(model_name.lower(), st.session_state.user_lang)} CSV", 
+                        st.download_button(f"📥 {tr('download', st.session_state.user_lang)} {tr(model_name.lower(), st.session_state.user_lang)} CSV", 
                                          fc.to_csv(index=False), 
                                          file_name=f"{ticker}_{model_name}.csv", 
                                          mime="text/csv",
@@ -4123,54 +3983,24 @@ if run:
             html_out.append('</div>')
             st.markdown("".join(html_out), unsafe_allow_html=True)
 
-    # Optional: basic risk and portfolio section
-    if enable_portfolio:
-        st.markdown("---")
-        st.subheader("Portfolio and Risk")
-        # Very simple buy-and-hold backtest over available df
-        prices = df['Close'].values
-        if len(prices) > 1:
-            returns = np.diff(prices) / prices[:-1]
-            cum_return = float((1 + returns).prod() - 1)
-            volatility = float(np.std(returns) * np.sqrt(252)) if len(returns) > 1 else 0.0
-            # Max drawdown
-            cum_curve = np.cumprod(1 + returns)
-            peak = np.maximum.accumulate(cum_curve)
-            drawdowns = 1 - (cum_curve / np.where(peak==0, 1, peak))
-            max_dd = float(np.max(drawdowns)) if len(drawdowns) else 0.0
-            # Parametric 95% VaR
-            var95 = float(-1.65 * np.std(returns) * initial_cash)
-
-            met = st.columns(4)
-            with met[0]:
-                st.metric("Buy&Hold Return", f"{cum_return*100:.2f}%")
-            with met[1]:
-                st.metric("Volatility (ann.)", f"{volatility*100:.2f}%")
-            with met[2]:
-                st.metric("Max Drawdown", f"{max_dd*100:.2f}%")
-            with met[3]:
-                st.metric("VaR 95% (1d)", f"${var95:,.0f}")
-        else:
-            st.info("Not enough data for risk metrics.")
-
     # Download raw data
     st.markdown("---")
     st.subheader(tr("export_data", st.session_state.user_lang))
     export_cols = st.columns([1,1,1])
     with export_cols[0]:
-        st.download_button(f"Download CSV", 
+        st.download_button(f"📥 {tr('download_csv', st.session_state.user_lang)}", 
                          df.to_csv(index=False), 
                          file_name=f"{ticker}_complete_data.csv", 
                          mime="text/csv")
     with export_cols[1]:
-        st.download_button(f"Download JSON", 
+        st.download_button(f"📥 {tr('download_json', st.session_state.user_lang)}", 
                          df.to_json(orient='records', date_format='iso'), 
                          file_name=f"{ticker}_historical.json", 
                          mime="application/json")
     with export_cols[2]:
         if articles:
             news_df = pd.DataFrame(articles)
-            st.download_button(f"Download News", 
+            st.download_button(f"📥 {tr('download_news', st.session_state.user_lang)}", 
                              news_df.to_csv(index=False), 
                              file_name=f"{ticker}_news.csv", 
                              mime="text/csv")
@@ -4187,14 +4017,14 @@ else:
     st.markdown(f"### {tr('model_status', st.session_state.user_lang)}")
     status_cols = st.columns(4)
     with status_cols[0]:
-        status = f"{tr('available', st.session_state.user_lang)}" if HAS_PROPHET else f"{tr('missing', st.session_state.user_lang)}"
+        status = f"✅ {tr('available', st.session_state.user_lang)}" if HAS_PROPHET else f"❌ {tr('missing', st.session_state.user_lang)}"
         st.markdown(f"**{tr('prophet', st.session_state.user_lang)}:** {status}")
     with status_cols[1]:
-        status = f"{tr('available', st.session_state.user_lang)}" if HAS_ARIMA else f"{tr('missing', st.session_state.user_lang)}"
+        status = f"✅ {tr('available', st.session_state.user_lang)}" if HAS_ARIMA else f"❌ {tr('missing', st.session_state.user_lang)}"
         st.markdown(f"**{tr('arima', st.session_state.user_lang)}:** {status}")
     with status_cols[2]:
-        status = f"{tr('available', st.session_state.user_lang)}" if HAS_SKLEARN else f"{tr('missing', st.session_state.user_lang)}"
+        status = f"✅ {tr('available', st.session_state.user_lang)}" if HAS_SKLEARN else f"❌ {tr('missing', st.session_state.user_lang)}"
         st.markdown(f"**{tr('random_forest', st.session_state.user_lang)}:** {status}")
     with status_cols[3]:
-        status = f"{tr('available', st.session_state.user_lang)}" if HAS_TF else f"{tr('missing', st.session_state.user_lang)}"
+        status = f"✅ {tr('available', st.session_state.user_lang)}" if HAS_TF else f"❌ {tr('missing', st.session_state.user_lang)}"
         st.markdown(f"**{tr('lstm', st.session_state.user_lang)}:** {status}")
