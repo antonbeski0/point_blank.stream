@@ -3667,7 +3667,7 @@ with controls[0]:
 # Custom ticker search
 # --------------------------
 st.markdown("---")  # separator line for clarity
-st.subheader(" " + tr("search_any_ticker", st.session_state.user_lang))
+st.subheader(" " + tr("Search any ticker", st.session_state.user_lang))
 
 custom_ticker = st.text_input(
     tr("enter_yahoo_symbol", st.session_state.user_lang),
@@ -4067,6 +4067,7 @@ else:
     with status_cols[3]:
         status = f" {tr('available', st.session_state.user_lang)}" if HAS_TF else f" {tr('missing', st.session_state.user_lang)}"
         st.markdown(f"**{tr('lstm', st.session_state.user_lang)}:** {status}")
+
 
 
 
