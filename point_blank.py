@@ -2824,7 +2824,7 @@ def fetch_yahoo_data(ticker: str, period="6mo", interval="1d", max_retries=3) ->
                     time.sleep(2 ** attempt)  # Exponential backoff
                     continue
                 st.error(f"❌ No data returned for {clean_ticker} after {max_retries} attempts.")
-                st.info("💡 **Troubleshooting tips:**")
+                st.info(" **Troubleshooting tips:**")
                 st.info("• Check if the ticker symbol is correct (e.g., AAPL, TSLA, BTC-USD)")
                 st.info("• Try different ticker formats (e.g., .TO for Canadian stocks)")
                 st.info("• Verify the ticker exists on Yahoo Finance")
@@ -2874,7 +2874,7 @@ def fetch_yahoo_data(ticker: str, period="6mo", interval="1d", max_retries=3) ->
             if attempt == max_retries - 1:
                 st.error(f"🌐 Network error while fetching data for {clean_ticker}")
                 st.error(f"Error details: {str(e)}")
-                st.info("💡 **Network troubleshooting:**")
+                st.info(" **Network troubleshooting:**")
                 st.info("• Check your internet connection")
                 st.info("• Try again in a few moments")
                 st.info("• The Yahoo Finance API might be temporarily unavailable")
@@ -2886,7 +2886,7 @@ def fetch_yahoo_data(ticker: str, period="6mo", interval="1d", max_retries=3) ->
             if attempt == max_retries - 1:
                 st.error(f"❌ Unexpected error while fetching data for {clean_ticker}")
                 st.error(f"Error details: {str(e)}")
-                st.info("💡 **Please try:**")
+                st.info(" **Please try:**")
                 st.info("• Verifying the ticker symbol is correct")
                 st.info("• Using a different ticker format")
                 st.info("• Refreshing the page and trying again")
@@ -3667,7 +3667,7 @@ with controls[0]:
 # Custom ticker search
 # --------------------------
 st.markdown("---")  # separator line for clarity
-st.subheader("🔍 " + tr("search_any_ticker", st.session_state.user_lang))
+st.subheader(" " + tr("search_any_ticker", st.session_state.user_lang))
 
 custom_ticker = st.text_input(
     tr("enter_yahoo_symbol", st.session_state.user_lang),
@@ -3683,21 +3683,21 @@ if custom_ticker and custom_ticker.strip():
     # Validate ticker format first
     if not re.match(r'^[A-Za-z0-9\-\._=]+$', ticker):
         st.error(f"❌ Invalid ticker format: {ticker}")
-        st.info("💡 **Valid formats:** Letters, numbers, hyphens, dots, underscores, and equals signs only")
+        st.info(" **Valid formats:** Letters, numbers, hyphens, dots, underscores, and equals signs only")
         ticker = None
     else:
         # Validate ticker exists on Yahoo Finance
-        with st.spinner("🔍 Validating ticker..."):
+        with st.spinner(" Validating ticker..."):
             ticker_info = validate_ticker(ticker)
         
         if ticker_info["valid"]:
             st.success(f"✅ **{ticker_info['name']}** ({ticker_info['symbol']})")
-            st.info(f"📊 Exchange: {ticker_info['exchange']} | 💰 Currency: {ticker_info['currency']}")
+            st.info(f" Exchange: {ticker_info['exchange']} |  Currency: {ticker_info['currency']}")
             if ticker_info.get('sector'):
-                st.info(f"🏢 Sector: {ticker_info['sector']}")
+                st.info(f" Sector: {ticker_info['sector']}")
         else:
             st.error(f"❌ {ticker_info['error']}")
-            st.info("💡 **Try:**")
+            st.info(" **Try:**")
             st.info("• Check spelling (e.g., AAPL, TSLA, BTC-USD)")
             st.info("• Use correct exchange suffix (e.g., .TO for Canadian stocks)")
             st.info("• Verify the ticker exists on Yahoo Finance")
@@ -3739,7 +3739,7 @@ if run:
     # Display company information if available
     if ticker_info and ticker_info.get('valid'):
         st.markdown("---")
-        st.subheader("🏢 Company Information")
+        st.subheader(" Company Information")
         info_cols = st.columns([2, 1, 1])
         with info_cols[0]:
             st.write(f"**Company:** {ticker_info.get('name', ticker)}")
@@ -3766,7 +3766,7 @@ if run:
     # Display key metrics
     last = df.iloc[-1]
     st.markdown("---")
-    st.subheader("📊 Current Market Data")
+    st.subheader(" Current Market Data")
     metrics_cols = st.columns([1,1,1,1,1])
     with metrics_cols[0]: st.metric(tr("date", st.session_state.user_lang), str(pd.to_datetime(last['Date']).date()))
     with metrics_cols[1]: st.metric(tr("open", st.session_state.user_lang), format_currency(last['Open'], currency_code))
@@ -3780,7 +3780,7 @@ if run:
 
     # Technical Analysis Section
     st.markdown("---")
-    st.subheader("📊 Technical Analysis")
+    st.subheader(" Technical Analysis")
     
     # Generate technical analysis
     analysis = generate_technical_analysis(df, ticker)
@@ -3827,7 +3827,7 @@ if run:
                 st.write(f"**Signal:** {ma_info.get('signal', 'Neutral')}")
         
         with analysis_cols[1]:
-            st.markdown("#### 📊 Technical Indicators")
+            st.markdown("####  Technical Indicators")
             
             rsi_info = analysis.get('rsi', {})
             if rsi_info:
@@ -3851,7 +3851,7 @@ if run:
         # Volume Analysis
         volume_info = analysis.get('volume', {})
         if volume_info:
-            st.markdown("#### 📊 Volume Analysis")
+            st.markdown("####  Volume Analysis")
             vol_cols = st.columns(3)
             with vol_cols[0]:
                 st.metric("Current Volume", f"{volume_info.get('current', 0):,}")
@@ -3904,7 +3904,7 @@ if run:
                                         paper_bgcolor='#000000', plot_bgcolor='#000000')
                         st.plotly_chart(fig, use_container_width=True, theme=None)
                         
-                        st.download_button(f"📥 {tr('download', st.session_state.user_lang)} {tr(model_name.lower(), st.session_state.user_lang)} CSV", 
+                        st.download_button(f" {tr('download', st.session_state.user_lang)} {tr(model_name.lower(), st.session_state.user_lang)} CSV", 
                                          fc.to_csv(index=False), 
                                          file_name=f"{ticker}_{model_name}.csv", 
                                          mime="text/csv",
@@ -3988,19 +3988,19 @@ if run:
     st.subheader(tr("export_data", st.session_state.user_lang))
     export_cols = st.columns([1,1,1])
     with export_cols[0]:
-        st.download_button(f"📥 {tr('download_csv', st.session_state.user_lang)}", 
+        st.download_button(f" {tr('download_csv', st.session_state.user_lang)}", 
                          df.to_csv(index=False), 
                          file_name=f"{ticker}_complete_data.csv", 
                          mime="text/csv")
     with export_cols[1]:
-        st.download_button(f"📥 {tr('download_json', st.session_state.user_lang)}", 
+        st.download_button(f" {tr('download_json', st.session_state.user_lang)}", 
                          df.to_json(orient='records', date_format='iso'), 
                          file_name=f"{ticker}_historical.json", 
                          mime="application/json")
     with export_cols[2]:
         if articles:
             news_df = pd.DataFrame(articles)
-            st.download_button(f"📥 {tr('download_news', st.session_state.user_lang)}", 
+            st.download_button(f" {tr('download_news', st.session_state.user_lang)}", 
                              news_df.to_csv(index=False), 
                              file_name=f"{ticker}_news.csv", 
                              mime="text/csv")
@@ -4017,15 +4017,16 @@ else:
     st.markdown(f"### {tr('model_status', st.session_state.user_lang)}")
     status_cols = st.columns(4)
     with status_cols[0]:
-        status = f"✅ {tr('available', st.session_state.user_lang)}" if HAS_PROPHET else f"❌ {tr('missing', st.session_state.user_lang)}"
+        status = f" {tr('available', st.session_state.user_lang)}" if HAS_PROPHET else f" {tr('missing', st.session_state.user_lang)}"
         st.markdown(f"**{tr('prophet', st.session_state.user_lang)}:** {status}")
     with status_cols[1]:
-        status = f"✅ {tr('available', st.session_state.user_lang)}" if HAS_ARIMA else f"❌ {tr('missing', st.session_state.user_lang)}"
+        status = f" {tr('available', st.session_state.user_lang)}" if HAS_ARIMA else f" {tr('missing', st.session_state.user_lang)}"
         st.markdown(f"**{tr('arima', st.session_state.user_lang)}:** {status}")
     with status_cols[2]:
-        status = f"✅ {tr('available', st.session_state.user_lang)}" if HAS_SKLEARN else f"❌ {tr('missing', st.session_state.user_lang)}"
+        status = f" {tr('available', st.session_state.user_lang)}" if HAS_SKLEARN else f" {tr('missing', st.session_state.user_lang)}"
         st.markdown(f"**{tr('random_forest', st.session_state.user_lang)}:** {status}")
     with status_cols[3]:
-        status = f"✅ {tr('available', st.session_state.user_lang)}" if HAS_TF else f"❌ {tr('missing', st.session_state.user_lang)}"
+        status = f" {tr('available', st.session_state.user_lang)}" if HAS_TF else f" {tr('missing', st.session_state.user_lang)}"
         st.markdown(f"**{tr('lstm', st.session_state.user_lang)}:** {status}")
+
 
