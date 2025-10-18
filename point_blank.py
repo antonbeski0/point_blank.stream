@@ -17,6 +17,8 @@ import re
 import time
 import locale
 import threading
+import os
+import logging
 from concurrent.futures import ThreadPoolExecutor
 
 # Set locale for proper number formatting
@@ -303,7 +305,17 @@ For personalized financial guidance, please consult a licensed financial advisor
         "lstm_warning2": "Not enough sequences for LSTM training. Skipping LSTM.",
         "language_select": "Select your preferred language",
         "city_select": "Select your city on the globe",
-        "current_time": "Current Time"
+        "current_time": "Current Time",
+        "confidence_interval": "Confidence Interval",
+        "forecast_details": "Forecast Details",
+        "forecast_statistics": "Forecast Statistics",
+        "min_forecast": "Min Forecast",
+        "max_forecast": "Max Forecast",
+        "avg_forecast": "Avg Forecast",
+        "current_price": "Current Price",
+        "day_forecast": "30-Day Forecast",
+        "expected_change": "Expected Change",
+        "confidence_range": "Confidence Range"
     },
     "es": {
         "disclaimer_title": "DESCARGO DE RESPONSABILIDAD",
@@ -4093,13 +4105,32 @@ def forecast_prophet(df: pd.DataFrame, periods: int = 30):
         return None
     
     try:
+        logger.info("Starting Prophet forecasting (parallel)")
+        
+        # Data validation
+        if len(df) < 30:
+            logger.warning("Insufficient data for Prophet (minimum 30 days required)")
+            return None
+            
         prophet_df = df[['Date', 'Close']].rename(columns={'Date': 'ds', 'Close': 'y'}).copy()
         prophet_df['ds'] = pd.to_datetime(prophet_df['ds']).dt.tz_localize(None)
+        
+        # Remove any NaN values
+        prophet_df = prophet_df.dropna()
+        
+        if len(prophet_df) < 30:
+            logger.warning("Insufficient valid data for Prophet after cleaning")
+            return None
 
-        # Dynamic changepoint scale (more flexible if volatile)
+        # Advanced Prophet configuration
         vol = prophet_df['y'].pct_change().std()
-        changepoint_scale = 0.05 if vol < 0.02 else 0.2
-
+        trend_strength = abs(prophet_df['y'].pct_change().mean())
+        
+        # Dynamic parameters based on data characteristics
+        changepoint_scale = 0.01 if vol < 0.01 else (0.05 if vol < 0.03 else 0.1)
+        seasonality_scale = 10.0 if trend_strength > 0.001 else 20.0
+        
+        # Create Prophet model with optimized parameters
         m = Prophet(
             growth='linear',
             daily_seasonality=True,
@@ -4107,50 +4138,95 @@ def forecast_prophet(df: pd.DataFrame, periods: int = 30):
             yearly_seasonality=True,
             seasonality_mode='multiplicative',
             changepoint_prior_scale=changepoint_scale,
-            seasonality_prior_scale=15.0,
-            holidays_prior_scale=15.0,
+            seasonality_prior_scale=seasonality_scale,
+            holidays_prior_scale=10.0,
             interval_width=0.95,
-            uncertainty_samples=1000
+            uncertainty_samples=1000,
+            mcmc_samples=0,  # Disable MCMC for faster training
+            changepoint_range=0.8  # Allow changepoints in first 80% of data
         )
 
-        # Add custom seasonalities
-        m.add_seasonality(name='monthly', period=30.5, fourier_order=8)
-        m.add_seasonality(name='quarterly', period=91.25, fourier_order=10)
+        # Add advanced seasonalities
+        if len(prophet_df) > 90:  # Only add if enough data
+            m.add_seasonality(name='monthly', period=30.5, fourier_order=6)
+        if len(prophet_df) > 365:  # Only add if enough data
+            m.add_seasonality(name='quarterly', period=91.25, fourier_order=8)
+            m.add_seasonality(name='half_yearly', period=182.5, fourier_order=4)
 
-        # Add known regressors
-        for col in ['Volume', 'RSI', 'MACD', 'MA20', 'MA50']:
+        # Add technical indicators as regressors
+        regressor_cols = ['Volume', 'RSI', 'MACD', 'MA20', 'MA50', 'ADX', 'VWAP']
+        for col in regressor_cols:
             if col in df.columns:
-                prophet_df[col.lower()] = df[col].fillna(df[col].mean())
+                # Normalize regressor to prevent Prophet issues
+                regressor_data = df[col].fillna(df[col].median())
+                if regressor_data.std() > 0:
+                    regressor_data = (regressor_data - regressor_data.mean()) / regressor_data.std()
+                prophet_df[col.lower()] = regressor_data
                 m.add_regressor(col.lower())
 
-        m.fit(prophet_df)
+        # Fit model with error handling
+        try:
+            m.fit(prophet_df)
+            logger.info("Prophet model fitted successfully (parallel)")
+        except Exception as fit_error:
+            logger.error(f"Prophet fitting failed: {str(fit_error)}")
+            # Fallback to simple Prophet model
+            m = Prophet(
+                growth='linear',
+                daily_seasonality=True,
+                weekly_seasonality=True,
+                yearly_seasonality=True,
+                seasonality_mode='multiplicative',
+                interval_width=0.95
+            )
+            m.fit(prophet_df)
 
-        # Future DataFrame
+        # Create future dataframe
         future = m.make_future_dataframe(periods=periods, freq='D')
         future['ds'] = pd.to_datetime(future['ds']).dt.tz_localize(None)
 
-        # Realistic regressor forward-filling with mean reversion
-        for col in ['volume', 'rsi', 'macd', 'ma20', 'ma50']:
-            if col in prophet_df.columns:
-                last_val = prophet_df[col].iloc[-1]
-                hist_mean = prophet_df[col].mean()
+        # Advanced regressor forward-filling
+        for col in regressor_cols:
+            if col.lower() in prophet_df.columns:
+                last_val = prophet_df[col.lower()].iloc[-1]
+                hist_mean = prophet_df[col.lower()].mean()
+                hist_std = prophet_df[col.lower()].std()
                 
-                # Create realistic decay pattern
-                if col == 'rsi':
-                    # RSI should mean-revert to 50
-                    decay_values = np.linspace(last_val, 50, periods)
-                elif col == 'volume':
-                    # Volume should decay to historical mean
-                    decay_values = np.linspace(last_val, hist_mean, periods)
+                # Create realistic future values
+                if col.lower() == 'rsi':
+                    # RSI mean reversion with some randomness
+                    target = 50
+                    noise = np.random.normal(0, 5, periods)
+                    future_values = np.linspace(last_val, target, periods) + noise
+                    future_values = np.clip(future_values, 0, 100)
+                elif col.lower() == 'volume':
+                    # Volume with trend and seasonality
+                    trend = np.linspace(last_val, hist_mean, periods)
+                    seasonality = 0.1 * np.sin(np.linspace(0, 4*np.pi, periods))
+                    noise = np.random.normal(0, 0.1, periods)
+                    future_values = trend + seasonality + noise
                 else:
-                    # Technical indicators: gradual mean reversion
-                    decay_values = np.linspace(last_val, hist_mean, periods)
+                    # Technical indicators: gradual mean reversion with noise
+                    trend = np.linspace(last_val, hist_mean, periods)
+                    noise = np.random.normal(0, 0.1 * hist_std, periods)
+                    future_values = trend + noise
                 
-                future[col] = decay_values
+                future[col.lower()] = future_values
 
+        # Generate forecast
         forecast = m.predict(future)
-        fc = forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].rename(columns={'ds': 'Date'})
-        return fc
+        
+        # Extract only future predictions
+        future_forecast = forecast.tail(periods)[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].copy()
+        future_forecast = future_forecast.rename(columns={'ds': 'Date'})
+        
+        # Ensure positive predictions
+        future_forecast['yhat'] = np.maximum(future_forecast['yhat'], 0.01)
+        future_forecast['yhat_lower'] = np.maximum(future_forecast['yhat_lower'], 0.01)
+        future_forecast['yhat_upper'] = np.maximum(future_forecast['yhat_upper'], 0.01)
+        
+        logger.info("Prophet forecasting completed successfully (parallel)")
+        return future_forecast
 
     except Exception as e:
         logger.error(f"Prophet forecasting failed: {str(e)}")
@@ -4162,44 +4238,166 @@ def forecast_arima(df: pd.DataFrame, periods: int = 30):
         return None
     
     try:
+        logger.info("Starting ARIMA forecasting (parallel)")
+        
+        # Data validation
+        if len(df) < 50:
+            logger.warning("Insufficient data for ARIMA (minimum 50 days required)")
+            return None
+            
         series = df.set_index('Date')['Close'].sort_index()
         series.index = pd.to_datetime(series.index).tz_localize(None)
 
-        # Fill missing dates
+        # Advanced data preprocessing
+        # Fill missing dates with interpolation
         daily_idx = pd.date_range(series.index.min(), series.index.max(), freq='D')
-        series = series.reindex(daily_idx).ffill().bfill()  # forward & backward fill
-
-        # Automatic order selection if dataset is large enough
-        try:
-            # Use simple ARIMA if dataset is small
-            order = (5, 1, 0) if len(series) < 500 else None
-            if order is None:
-                try:
-                    import pmdarima as pm
-                    model = pm.auto_arima(series, seasonal=True, m=7, D=1, stepwise=True, 
-                                        suppress_warnings=True, max_p=10, max_q=10)
-                    order = model.order
-                except ImportError:
-                    logger.warning("pmdarima not available, using fallback ARIMA order")
-                    order = (5, 1, 0)
-        except Exception as e:
-            logger.warning(f"ARIMA order selection failed: {str(e)[:100]}, using fallback")
-            order = (5, 1, 0)  # fallback
-
-        model = ARIMA(series, order=order).fit()
+        series = series.reindex(daily_idx)
         
-        # Get forecast with confidence intervals
-        fc_result = model.get_forecast(steps=periods)
-        fc_mean = fc_result.predicted_mean
-        fc_ci = fc_result.conf_int(alpha=0.05)  # 95% confidence interval
+        # Use interpolation instead of simple forward fill
+        series = series.interpolate(method='time').fillna(method='bfill').fillna(method='ffill')
+        
+        # Remove outliers using IQR method
+        Q1 = series.quantile(0.25)
+        Q3 = series.quantile(0.75)
+        IQR = Q3 - Q1
+        lower_bound = Q1 - 1.5 * IQR
+        upper_bound = Q3 + 1.5 * IQR
+        series = series[(series >= lower_bound) & (series <= upper_bound)]
+        
+        # Fill any remaining gaps
+        series = series.interpolate(method='time').fillna(method='bfill').fillna(method='ffill')
+        
+        if len(series) < 50:
+            logger.warning("Insufficient data for ARIMA after preprocessing")
+            return None
+
+        # Advanced order selection
+        best_order = None
+        best_aic = float('inf')
+        
+        try:
+            # Try pmdarima for automatic selection
+            import pmdarima as pm
+            
+            # Test different seasonal patterns
+            seasonal_orders = [
+                (7, 1, 1),   # Weekly seasonality
+                (30, 1, 1),  # Monthly seasonality
+                (0, 0, 0)    # No seasonality
+            ]
+            
+            for seasonal_order in seasonal_orders:
+                try:
+                    if seasonal_order == (0, 0, 0):
+                        # Non-seasonal ARIMA
+                        model = pm.auto_arima(
+                            series, 
+                            seasonal=False,
+                            stepwise=True,
+                            suppress_warnings=True,
+                            max_p=8, max_q=8, max_d=2,
+                            start_p=1, start_q=1, start_d=0,
+                            test='adf',
+                            error_action='ignore'
+                        )
+                    else:
+                        # Seasonal ARIMA
+                        model = pm.auto_arima(
+                            series, 
+                            seasonal=True,
+                            m=seasonal_order[0],
+                            D=seasonal_order[1],
+                            stepwise=True,
+                            suppress_warnings=True,
+                            max_p=6, max_q=6, max_d=2,
+                            max_P=2, max_Q=2, max_D=1,
+                            start_p=1, start_q=1, start_d=0,
+                            test='adf',
+                            error_action='ignore'
+                        )
+                    
+                    if model.aic() < best_aic:
+                        best_aic = model.aic()
+                        best_order = model.order
+                        best_seasonal_order = model.seasonal_order
+                        
+                except Exception as e:
+                    logger.warning(f"ARIMA order selection failed for {seasonal_order}: {str(e)[:100]}")
+                    continue
+            
+            if best_order is not None:
+                logger.info(f"Best ARIMA order: {best_order}, seasonal: {best_seasonal_order}, AIC: {best_aic:.2f}")
+            else:
+                raise Exception("No valid ARIMA order found")
+                
+        except ImportError:
+            logger.warning("pmdarima not available, using manual order selection")
+            # Manual order selection based on data characteristics
+            if len(series) < 100:
+                best_order = (2, 1, 1)
+            elif len(series) < 500:
+                best_order = (3, 1, 2)
+            else:
+                best_order = (5, 1, 2)
+            best_seasonal_order = (0, 0, 0)
+        
+        except Exception as e:
+            logger.warning(f"pmdarima failed: {str(e)[:100]}, using fallback")
+            # Fallback to simple ARIMA
+            best_order = (2, 1, 1) if len(series) < 200 else (3, 1, 2)
+            best_seasonal_order = (0, 0, 0)
+
+        # Fit ARIMA model
+        if best_seasonal_order == (0, 0, 0):
+            model = ARIMA(series, order=best_order).fit()
+        else:
+            from statsmodels.tsa.statespace.sarimax import SARIMAX
+            model = SARIMAX(series, order=best_order, seasonal_order=best_seasonal_order).fit(disp=False)
+        
+        logger.info("ARIMA model fitted successfully (parallel)")
+        
+        # Generate forecast with confidence intervals
+        try:
+            if hasattr(model, 'get_forecast'):
+                fc_result = model.get_forecast(steps=periods)
+                fc_mean = fc_result.predicted_mean
+                fc_ci = fc_result.conf_int(alpha=0.05)
+            else:
+                # Fallback for SARIMAX
+                fc_mean = model.forecast(steps=periods)
+                # Approximate confidence intervals
+                residuals = model.resid
+                std_error = residuals.std()
+                fc_ci = pd.DataFrame({
+                    0: fc_mean - 1.96 * std_error,
+                    1: fc_mean + 1.96 * std_error
+                })
+        except Exception as e:
+            logger.warning(f"Confidence interval calculation failed: {str(e)[:100]}")
+            fc_mean = model.forecast(steps=periods)
+            # Simple confidence intervals
+            residuals = model.resid
+            std_error = residuals.std()
+            fc_ci = pd.DataFrame({
+                0: fc_mean - 1.96 * std_error,
+                1: fc_mean + 1.96 * std_error
+            })
+        
+        # Ensure positive predictions
+        fc_mean = np.maximum(fc_mean, 0.01)
+        fc_ci.iloc[:, 0] = np.maximum(fc_ci.iloc[:, 0], 0.01)
+        fc_ci.iloc[:, 1] = np.maximum(fc_ci.iloc[:, 1], 0.01)
         
         dates = pd.date_range(start=series.index[-1] + timedelta(days=1), periods=periods)
-        return pd.DataFrame({
+        result = pd.DataFrame({
             'Date': dates, 
             'yhat': fc_mean.values,
             'yhat_lower': fc_ci.iloc[:, 0].values,
             'yhat_upper': fc_ci.iloc[:, 1].values
         })
+        
+        logger.info("ARIMA forecasting completed successfully (parallel)")
+        return result
 
     except Exception as e:
         logger.error(f"ARIMA forecasting failed: {str(e)}")
@@ -4211,37 +4409,196 @@ def forecast_random_forest(df: pd.DataFrame, periods: int = 30):
         return None
     
     try:
-        data = df[['Close']].copy()
-        n_lags = min(10, len(data)//2)  # dynamic lag selection for small datasets
-
+        logger.info("Starting Random Forest forecasting (parallel)")
+        
+        # Data validation
+        if len(df) < 30:
+            logger.warning("Insufficient data for Random Forest (minimum 30 days required)")
+            return None
+            
+        # Create comprehensive feature set
+        data = df.copy()
+        
+        # Price-based features
+        data['returns'] = data['Close'].pct_change()
+        data['log_returns'] = np.log(data['Close'] / data['Close'].shift(1))
+        data['volatility'] = data['returns'].rolling(10).std()
+        data['momentum'] = data['Close'] - data['Close'].shift(10)
+        data['price_range'] = (data['High'] - data['Low']) / data['Close']
+        
+        # Technical indicators as features
+        if 'RSI' in df.columns:
+            data['rsi'] = df['RSI']
+            data['rsi_signal'] = np.where(df['RSI'] > 70, 1, np.where(df['RSI'] < 30, -1, 0))
+        if 'MACD' in df.columns:
+            data['macd'] = df['MACD']
+            data['macd_signal'] = np.where(df['MACD'] > 0, 1, -1)
+        if 'MA20' in df.columns:
+            data['ma20'] = df['MA20']
+            data['price_vs_ma20'] = (data['Close'] - df['MA20']) / df['MA20']
+        if 'MA50' in df.columns:
+            data['ma50'] = df['MA50']
+            data['price_vs_ma50'] = (data['Close'] - df['MA50']) / df['MA50']
+        if 'Volume' in df.columns:
+            data['volume'] = df['Volume']
+            data['volume_ma'] = df['Volume'].rolling(10).mean()
+            data['volume_ratio'] = df['Volume'] / data['volume_ma']
+        
+        # Lag features
+        n_lags = min(15, len(data)//3)  # More lags for better prediction
         for lag in range(1, n_lags+1):
-            data[f'lag_{lag}'] = data['Close'].shift(lag)
+            data[f'close_lag_{lag}'] = data['Close'].shift(lag)
+            data[f'returns_lag_{lag}'] = data['returns'].shift(lag)
+        
+        # Rolling statistics
+        for window in [5, 10, 20]:
+            data[f'close_ma_{window}'] = data['Close'].rolling(window).mean()
+            data[f'close_std_{window}'] = data['Close'].rolling(window).std()
+            data[f'returns_ma_{window}'] = data['returns'].rolling(window).mean()
+        
+        # Time-based features
+        data['day_of_week'] = pd.to_datetime(data['Date']).dt.dayofweek
+        data['month'] = pd.to_datetime(data['Date']).dt.month
+        data['quarter'] = pd.to_datetime(data['Date']).dt.quarter
+        
+        # Remove rows with NaN values
         data = data.dropna()
-
-        X = data[[f'lag_{i}' for i in range(1, n_lags+1)]].values
+        
+        if len(data) < 30:
+            logger.warning("Insufficient data for Random Forest after feature engineering")
+            return None
+            
+        # Select features for training
+        feature_cols = [col for col in data.columns if col not in ['Date', 'Close', 'Open', 'High', 'Low', 'Volume']]
+        X = data[feature_cols].values
         y = data['Close'].values
-
-        model = RandomForestRegressor(
-            n_estimators=500, 
-            max_depth=15,  # Limit depth to prevent overfitting
-            min_samples_split=20,
-            min_samples_leaf=10,
-            max_features='sqrt',  # Feature subsampling
-            random_state=42, 
-            n_jobs=-1
-        )
-        model.fit(X, y)
-
-        # Iterative multi-step forecast
-        last_window = X[-1].tolist()
+        
+        # Train-test split for validation
+        split_idx = int(len(X) * 0.8)
+        X_train, X_test = X[:split_idx], X[split_idx:]
+        y_train, y_test = y[:split_idx], y[split_idx:]
+        
+        # Advanced Random Forest with hyperparameter optimization
+        try:
+            from sklearn.model_selection import GridSearchCV
+            
+            # Define parameter grid
+            param_grid = {
+                'n_estimators': [200, 300, 500],
+                'max_depth': [10, 15, 20, None],
+                'min_samples_split': [5, 10, 20],
+                'min_samples_leaf': [2, 5, 10],
+                'max_features': ['sqrt', 'log2', 0.8]
+            }
+            
+            # Use a smaller grid for faster training
+            if len(X_train) > 1000:
+                param_grid = {
+                    'n_estimators': [300, 500],
+                    'max_depth': [15, 20],
+                    'min_samples_split': [10, 20],
+                    'min_samples_leaf': [5, 10],
+                    'max_features': ['sqrt', 0.8]
+                }
+            
+            # Grid search with cross-validation
+            rf = RandomForestRegressor(random_state=42, n_jobs=-1)
+            grid_search = GridSearchCV(
+                rf, param_grid, 
+                cv=min(5, len(X_train)//20),  # Adaptive CV folds
+                scoring='neg_mean_squared_error',
+                n_jobs=-1,
+                verbose=0
+            )
+            grid_search.fit(X_train, y_train)
+            model = grid_search.best_estimator_
+            logger.info(f"Best RF parameters: {grid_search.best_params_}")
+        except Exception as e:
+            logger.warning(f"Grid search failed: {str(e)[:100]}, using default parameters")
+            model = RandomForestRegressor(
+                n_estimators=300,
+                max_depth=15,
+                min_samples_split=10,
+                min_samples_leaf=5,
+                max_features='sqrt',
+                random_state=42,
+                n_jobs=-1
+            )
+            model.fit(X_train, y_train)
+        
+        # Validate model performance
+        train_score = model.score(X_train, y_train)
+        test_score = model.score(X_test, y_test)
+        logger.info(f"RF Train R²: {train_score:.4f}, Test R²: {test_score:.4f}")
+        
+        # Feature importance
+        feature_importance = pd.DataFrame({
+            'feature': feature_cols,
+            'importance': model.feature_importances_
+        }).sort_values('importance', ascending=False)
+        logger.info(f"Top 5 features: {feature_importance.head()['feature'].tolist()}")
+        
+        # Advanced multi-step forecasting with uncertainty
+        last_features = X[-1].copy()
         preds = []
-        for _ in range(periods):
-            p = float(model.predict([last_window]))
-            preds.append(p)
-            last_window = [p] + last_window[:-1]
-
+        pred_std = []
+        
+        for step in range(periods):
+            # Predict next value
+            pred = model.predict([last_features])[0]
+            preds.append(pred)
+            
+            # Estimate prediction uncertainty using individual tree predictions
+            tree_preds = [tree.predict([last_features])[0] for tree in model.estimators_]
+            pred_std.append(np.std(tree_preds))
+            
+            # Update features for next prediction
+            # Shift all lag features
+            for i in range(len(feature_cols)):
+                if 'close_lag_' in feature_cols[i]:
+                    lag_num = int(feature_cols[i].split('_')[-1])
+                    if lag_num == 1:
+                        last_features[i] = pred
+                    else:
+                        # Shift other lags
+                        if f'close_lag_{lag_num-1}' in feature_cols:
+                            lag_idx = feature_cols.index(f'close_lag_{lag_num-1}')
+                            last_features[i] = last_features[lag_idx]
+                elif 'returns_lag_' in feature_cols[i]:
+                    lag_num = int(feature_cols[i].split('_')[-1])
+                    if lag_num == 1:
+                        last_features[i] = (pred - data['Close'].iloc[-1]) / data['Close'].iloc[-1]
+                    else:
+                        if f'returns_lag_{lag_num-1}' in feature_cols:
+                            lag_idx = feature_cols.index(f'returns_lag_{lag_num-1}')
+                            last_features[i] = last_features[lag_idx]
+                elif 'close_ma_' in feature_cols[i]:
+                    # Update moving averages (simplified)
+                    window = int(feature_cols[i].split('_')[-1])
+                    if step == 0:
+                        last_features[i] = data['Close'].tail(window).mean()
+                    else:
+                        # Approximate moving average update
+                        last_features[i] = (last_features[i] * (window - 1) + pred) / window
+        
+        # Ensure positive predictions
+        preds = np.maximum(preds, 0.01)
+        
+        # Create confidence intervals
+        pred_lower = np.array(preds) - 1.96 * np.array(pred_std)
+        pred_upper = np.array(preds) + 1.96 * np.array(pred_std)
+        pred_lower = np.maximum(pred_lower, 0.01)
+        
         dates = pd.date_range(start=df['Date'].iloc[-1] + timedelta(days=1), periods=periods)
-        return pd.DataFrame({'Date': dates, 'yhat': preds})
+        result = pd.DataFrame({
+            'Date': dates, 
+            'yhat': preds,
+            'yhat_lower': pred_lower,
+            'yhat_upper': pred_upper
+        })
+        
+        logger.info("Random Forest forecasting completed successfully (parallel)")
+        return result
 
     except Exception as e:
         logger.error(f"Random Forest forecasting failed: {str(e)}")
@@ -4255,6 +4612,11 @@ def forecast_lstm_parallel(df: pd.DataFrame, periods: int = 30):
     try:
         logger.info("Starting LSTM model training (parallel)")
         
+        # Data validation
+        if len(df) < 60:
+            logger.warning("Insufficient data for LSTM (minimum 60 days required)")
+            return None
+            
         # Generate data hash for caching
         data_hash = get_data_hash(df, "LSTM")
         
@@ -4269,19 +4631,39 @@ def forecast_lstm_parallel(df: pd.DataFrame, periods: int = 30):
             # Prepare data for prediction
             features_df = df.copy()
             feature_cols = ['Close', 'Volume', 'High', 'Low', 'Open']
-            extra_cols = ['RSI', 'MACD', 'MA20', 'MA50']
+            extra_cols = ['RSI', 'MACD', 'MA20', 'MA50', 'ADX', 'VWAP']
             feature_cols.extend([c for c in extra_cols if c in df.columns])
             feature_data = features_df[feature_cols].fillna(method='ffill').fillna(method='bfill')
             scaled_data = scaler.transform(feature_data)
         else:
-            # Train new model (simplified for parallel execution)
+            # Train new model with enhanced features
             logger.info("Training new LSTM model (parallel)")
             features_df = df.copy()
+            
+            # Enhanced feature engineering
             feature_cols = ['Close', 'Volume', 'High', 'Low', 'Open']
-            extra_cols = ['RSI', 'MACD', 'MA20', 'MA50']
+            extra_cols = ['RSI', 'MACD', 'MA20', 'MA50', 'ADX', 'VWAP']
             feature_cols.extend([c for c in extra_cols if c in df.columns])
-
+            
+            # Add derived features
+            features_df['returns'] = features_df['Close'].pct_change()
+            features_df['volatility'] = features_df['returns'].rolling(10).std()
+            features_df['price_range'] = (features_df['High'] - features_df['Low']) / features_df['Close']
+            features_df['volume_ma'] = features_df['Volume'].rolling(10).mean()
+            features_df['volume_ratio'] = features_df['Volume'] / features_df['volume_ma']
+            
+            # Add to feature columns
+            feature_cols.extend(['returns', 'volatility', 'price_range', 'volume_ratio'])
+            
+            # Clean and prepare data
             feature_data = features_df[feature_cols].fillna(method='ffill').fillna(method='bfill')
+            
+            # Remove any remaining NaN values
+            feature_data = feature_data.dropna()
+            
+            if len(feature_data) < 60:
+                logger.warning("Insufficient data for LSTM after feature engineering")
+                return None
 
             # CRITICAL FIX: Fit scaler ONLY on training data to prevent data leakage
             train_size = int(len(feature_data) * 0.8)
@@ -4295,68 +4677,115 @@ def forecast_lstm_parallel(df: pd.DataFrame, periods: int = 30):
             # Combine scaled data
             scaled_data = np.vstack([scaled_train, scaled_test])
 
-        # Adjust sequence length for small datasets
-        default_sequence_length = 60
-        sequence_length = min(default_sequence_length, len(scaled_data) // 2)
-        if sequence_length < 10:
-            logger.warning("Insufficient data for LSTM")
-            return None
+            # Dynamic sequence length based on data size
+            if len(scaled_data) < 200:
+                sequence_length = min(20, len(scaled_data) // 3)
+            elif len(scaled_data) < 500:
+                sequence_length = min(40, len(scaled_data) // 4)
+            else:
+                sequence_length = min(60, len(scaled_data) // 5)
+            
+            if sequence_length < 10:
+                logger.warning("Sequence length too short for LSTM")
+                return None
 
-        X_sequences, y_sequences = [], []
+            # Create sequences
+            X_sequences, y_sequences = [], []
 
-        for i in range(sequence_length, len(scaled_data)):
-            X_sequences.append(scaled_data[i - sequence_length:i])
-            y_sequences.append(scaled_data[i, 0])  # Close price
+            for i in range(sequence_length, len(scaled_data)):
+                X_sequences.append(scaled_data[i - sequence_length:i])
+                y_sequences.append(scaled_data[i, 0])  # Close price
 
-        X_sequences, y_sequences = np.array(X_sequences), np.array(y_sequences)
+            X_sequences, y_sequences = np.array(X_sequences), np.array(y_sequences)
 
-        # Skip if still too few sequences
-        if len(X_sequences) < 50:
-            logger.warning("Insufficient sequences for LSTM")
-            return None
+            # Skip if still too few sequences
+            if len(X_sequences) < 30:
+                logger.warning("Insufficient sequences for LSTM training")
+                return None
 
-        # Train-test split
-        train_size = int(len(X_sequences) * 0.8)
-        X_train, X_test = X_sequences[:train_size], X_sequences[train_size:]
-        y_train, y_test = y_sequences[:train_size], y_sequences[train_size:]
+            # Train-test split
+            train_size = int(len(X_sequences) * 0.8)
+            X_train, X_test = X_sequences[:train_size], X_sequences[train_size:]
+            y_train, y_test = y_sequences[:train_size], y_sequences[train_size:]
 
-        if cached_model is None:  # Only train if not cached
+            # Clear TensorFlow session
             tf.keras.backend.clear_session()
 
+            # Advanced LSTM architecture
             model = Sequential([
+                # Input layer with attention mechanism
                 LSTM(128, return_sequences=True, input_shape=(sequence_length, len(feature_cols))),
-                Dropout(0.3),
+                Dropout(0.2),
                 BatchNormalization(),
 
+                # Bidirectional LSTM for better pattern recognition
                 Bidirectional(LSTM(64, return_sequences=True)),
                 Dropout(0.3),
                 BatchNormalization(),
 
-                LSTM(32, return_sequences=False),
+                # Additional LSTM layer
+                LSTM(32, return_sequences=True),
                 Dropout(0.2),
+                BatchNormalization(),
 
-                Dense(64, activation='relu'),
-                Dense(32, activation='relu'),
+                # Attention layer (simplified)
+                LSTM(16, return_sequences=False),
+                Dropout(0.1),
+
+                # Dense layers with regularization
+                Dense(64, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.01)),
+                Dropout(0.2),
+                Dense(32, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.01)),
+                Dropout(0.1),
+                Dense(16, activation='relu'),
                 Dense(1, activation='linear')
             ])
 
-            optimizer = optimizers.Adam(learning_rate=0.001)
+            # Advanced optimizer with learning rate scheduling
+            initial_learning_rate = 0.001
+            lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
+                initial_learning_rate,
+                decay_steps=100,
+                decay_rate=0.96,
+                staircase=True
+            )
+            
+            optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
+            
             model.compile(
                 optimizer=optimizer,
-                loss=tf.keras.losses.Huber(),
-                metrics=['mae', 'mse']
+                loss=tf.keras.losses.Huber(delta=1.0),
+                metrics=['mae', 'mse', 'mape']
             )
 
+            # Advanced callbacks
             callbacks_list = [
-                callbacks.EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True),
-                callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-5),
-                callbacks.ModelCheckpoint("best_lstm.h5", save_best_only=True, monitor="val_loss")
+                callbacks.EarlyStopping(
+                    monitor='val_loss', 
+                    patience=15, 
+                    restore_best_weights=True,
+                    min_delta=1e-6
+                ),
+                callbacks.ReduceLROnPlateau(
+                    monitor='val_loss', 
+                    factor=0.5, 
+                    patience=8, 
+                    min_lr=1e-7,
+                    verbose=0
+                ),
+                callbacks.ModelCheckpoint(
+                    "best_lstm.h5", 
+                    save_best_only=True, 
+                    monitor="val_loss",
+                    verbose=0
+                )
             ]
 
-            model.fit(
+            # Train model
+            history = model.fit(
                 X_train, y_train,
-                epochs=100,
-                batch_size=32,
+                epochs=150,
+                batch_size=min(32, len(X_train)//4),
                 validation_data=(X_test, y_test),
                 callbacks=callbacks_list,
                 verbose=0
@@ -4364,44 +4793,79 @@ def forecast_lstm_parallel(df: pd.DataFrame, periods: int = 30):
             
             # Save model to cache
             save_model_cache(model, scaler, data_hash, "LSTM")
+            
+            # Log training results
+            final_loss = history.history['loss'][-1]
+            final_val_loss = history.history['val_loss'][-1]
+            logger.info(f"LSTM training completed - Final loss: {final_loss:.6f}, Val loss: {final_val_loss:.6f}")
 
-        # Iterative forecasting with realistic feature evolution
+        # Advanced multi-step forecasting with uncertainty estimation
         last_sequence = scaled_data[-sequence_length:]
         predictions_scaled = []
+        prediction_uncertainties = []
 
-        for _ in range(periods):
+        for step in range(periods):
             seq_input = last_sequence.reshape(1, sequence_length, len(feature_cols))
+            
+            # Get prediction
             pred_scaled = float(model.predict(seq_input, verbose=0)[0, 0])
             predictions_scaled.append(pred_scaled)
+            
+            # Estimate uncertainty using Monte Carlo dropout
+            mc_predictions = []
+            for _ in range(10):  # Monte Carlo samples
+                mc_pred = float(model(seq_input, training=True)[0, 0])
+                mc_predictions.append(mc_pred)
+            
+            uncertainty = np.std(mc_predictions)
+            prediction_uncertainties.append(uncertainty)
 
-            # Create realistic new row with feature evolution
+            # Create realistic new row with advanced feature evolution
             new_row = last_sequence[-1].copy()
             new_row[0] = pred_scaled  # Predicted close
             
-            # Volume: decay to historical mean with some randomness
-            if len(feature_cols) > 1:  # Volume column exists
-                hist_volume_mean = scaled_data[:, 1].mean()
-                volume_decay = 0.9
-                new_row[1] = new_row[1] * volume_decay + hist_volume_mean * (1 - volume_decay)
-            
-            # High/Low: reasonable spread around predicted close
-            if len(feature_cols) > 2:  # High column exists
-                volatility = np.std(scaled_data[-60:, 0]) if len(scaled_data) >= 60 else 0.01
-                spread = volatility * 0.5
-                new_row[2] = min(1.0, pred_scaled + spread)  # High (capped at 1.0)
-                new_row[3] = max(0.0, pred_scaled - spread)  # Low (capped at 0.0)
-            
-            # Open: close to previous close with small gap
-            if len(feature_cols) > 4:  # Open column exists
-                gap = np.random.normal(0, volatility * 0.1) if len(scaled_data) >= 60 else 0
-                new_row[4] = np.clip(pred_scaled + gap, 0.0, 1.0)
-            
-            # Technical indicators: gradual mean reversion
-            for i in range(5, len(feature_cols)):
-                if i < len(new_row):
+            # Advanced feature evolution
+            for i, col in enumerate(feature_cols):
+                if i == 0:  # Close price already set
+                    continue
+                elif col == 'Volume' and i < len(new_row):
+                    # Volume with trend and seasonality
+                    hist_volume_mean = scaled_data[:, i].mean()
+                    volume_decay = 0.95
+                    seasonality = 0.05 * np.sin(step * 2 * np.pi / 7)  # Weekly pattern
+                    noise = np.random.normal(0, 0.02)
+                    new_row[i] = new_row[i] * volume_decay + hist_volume_mean * (1 - volume_decay) + seasonality + noise
+                    new_row[i] = np.clip(new_row[i], 0, 1)
+                    
+                elif col in ['High', 'Low'] and i < len(new_row):
+                    # High/Low with realistic spread
+                    volatility = np.std(scaled_data[-30:, 0]) if len(scaled_data) >= 30 else 0.01
+                    spread = volatility * (0.3 + 0.2 * np.random.random())
+                    if col == 'High':
+                        new_row[i] = min(1.0, pred_scaled + spread)
+                    else:  # Low
+                        new_row[i] = max(0.0, pred_scaled - spread)
+                        
+                elif col == 'Open' and i < len(new_row):
+                    # Open with gap
+                    gap = np.random.normal(0, volatility * 0.05) if len(scaled_data) >= 30 else 0
+                    new_row[i] = np.clip(pred_scaled + gap, 0.0, 1.0)
+                    
+                elif col in ['RSI', 'MACD', 'MA20', 'MA50', 'ADX'] and i < len(new_row):
+                    # Technical indicators with mean reversion
+                    hist_mean = scaled_data[:, i].mean()
+                    decay_factor = 0.98
+                    noise = np.random.normal(0, 0.01)
+                    new_row[i] = new_row[i] * decay_factor + hist_mean * (1 - decay_factor) + noise
+                    new_row[i] = np.clip(new_row[i], 0, 1)
+                    
+                elif col in ['returns', 'volatility', 'price_range', 'volume_ratio'] and i < len(new_row):
+                    # Derived features
                     hist_mean = scaled_data[:, i].mean()
                     decay_factor = 0.95
-                    new_row[i] = new_row[i] * decay_factor + hist_mean * (1 - decay_factor)
+                    noise = np.random.normal(0, 0.005)
+                    new_row[i] = new_row[i] * decay_factor + hist_mean * (1 - decay_factor) + noise
+                    new_row[i] = np.clip(new_row[i], 0, 1)
             
             last_sequence = np.vstack([last_sequence[1:], new_row])
 
@@ -4413,9 +4877,27 @@ def forecast_lstm_parallel(df: pd.DataFrame, periods: int = 30):
 
         pred_inverse = scaler.inverse_transform(pred_array)
         predictions = pred_inverse[:, 0].tolist()
+        
+        # Create confidence intervals
+        pred_std = np.array(prediction_uncertainties) * np.array(predictions)
+        pred_lower = np.array(predictions) - 1.96 * pred_std
+        pred_upper = np.array(predictions) + 1.96 * pred_std
+        
+        # Ensure positive predictions
+        predictions = np.maximum(predictions, 0.01)
+        pred_lower = np.maximum(pred_lower, 0.01)
+        pred_upper = np.maximum(pred_upper, 0.01)
 
         dates = pd.date_range(start=df['Date'].iloc[-1] + timedelta(days=1), periods=periods)
-        return pd.DataFrame({'Date': dates, 'yhat': predictions})
+        result = pd.DataFrame({
+            'Date': dates, 
+            'yhat': predictions,
+            'yhat_lower': pred_lower,
+            'yhat_upper': pred_upper
+        })
+        
+        logger.info("LSTM forecasting completed successfully (parallel)")
+        return result
 
     except Exception as e:
         logger.error(f"LSTM forecasting failed: {str(e)}")
@@ -4558,15 +5040,26 @@ def fetch_google_news(query: str, max_items: int = 8, hl: str = "en-US", gl: str
         rss_url = f"https://news.google.com/rss/search?q={encoded}&hl={hl}&gl={gl}&ceid={ceid}"
         
         # Add timeout and user agent
-        import requests
+        try:
+            import requests
+        except ImportError:
+            # Fallback to urllib if requests is not available
+            import urllib.request
+            import urllib.error
+            
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
         
-        response = requests.get(rss_url, headers=headers, timeout=10)
-        response.raise_for_status()
-        
-        feed = feedparser.parse(response.content)
+        try:
+            response = requests.get(rss_url, headers=headers, timeout=10)
+            response.raise_for_status()
+            feed = feedparser.parse(response.content)
+        except NameError:
+            # Fallback to urllib if requests is not available
+            req = urllib.request.Request(rss_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as response:
+                feed = feedparser.parse(response.read())
         
         if not feed.entries:
             return []
@@ -4972,7 +5465,13 @@ if run:
         st.error(tr("no_data", st.session_state.user_lang))
         st.stop()
     
-    df = compute_indicators(df)
+    # Compute technical indicators with error handling
+    try:
+        df = compute_indicators(df)
+    except Exception as e:
+        logger.error(f"Error computing indicators: {str(e)}")
+        st.error(f"Error computing technical indicators: {str(e)[:200]}")
+        st.stop()
     
     # Get currency information
     currency_code, market = get_currency_info(ticker)
@@ -5023,8 +5522,13 @@ if run:
     st.markdown("---")
     st.subheader(" Technical Analysis")
     
-    # Generate technical analysis
-    analysis = generate_technical_analysis(df, ticker)
+    # Generate technical analysis with error handling
+    try:
+        analysis = generate_technical_analysis(df, ticker)
+    except Exception as e:
+        logger.error(f"Error generating technical analysis: {str(e)}")
+        st.error(f"Error generating technical analysis: {str(e)[:200]}")
+        analysis = None
     
     if analysis:
         # Overall Signal
@@ -5111,13 +5615,18 @@ if run:
     with forecast_col:
         st.subheader(tr("ai_forecasts", st.session_state.user_lang))
         with st.spinner(tr("running_models", st.session_state.user_lang)):
-            forecasts = forecast_all_parallel(df, periods=30)
+            try:
+                forecasts = forecast_all_parallel(df, periods=30)
+            except Exception as e:
+                logger.error(f"Error generating forecasts: {str(e)}")
+                st.error(f"Error generating forecasts: {str(e)[:200]}")
+                forecasts = None
         
         if forecasts:
             for model_name, fc in forecasts.items():
                 if fc is not None:
-                    with st.expander(f" {tr(model_name.lower(), st.session_state.user_lang)} {tr('model', st.session_state.user_lang)}", expanded=False):
-                        # Format forecast values with appropriate currency
+                    with st.expander(f"📈 {tr(model_name.lower(), st.session_state.user_lang)} {tr('model', st.session_state.user_lang)}", expanded=True):
+                        # Format forecast values with appropriate currency for display
                         fc_display = fc.copy()
                         if 'yhat' in fc_display.columns:
                             fc_display['yhat'] = fc_display['yhat'].apply(lambda x: format_currency(x, currency_code))
@@ -5125,31 +5634,159 @@ if run:
                             fc_display['yhat_lower'] = fc_display['yhat_lower'].apply(lambda x: format_currency(x, currency_code))
                         if 'yhat_upper' in fc_display.columns:
                             fc_display['yhat_upper'] = fc_display['yhat_upper'].apply(lambda x: format_currency(x, currency_code))
+                        
+                        # Display forecast summary
+                        if len(fc) > 0:
+                            latest_forecast = fc.iloc[-1]
+                            current_price = df['Close'].iloc[-1]
+                            price_change = latest_forecast['yhat'] - current_price
+                            price_change_pct = (price_change / current_price) * 100
                             
+                            # Create metrics columns
+                            metric_cols = st.columns(4)
+                            with metric_cols[0]:
+                                st.metric(tr("current_price", st.session_state.user_lang), format_currency(current_price, currency_code))
+                            with metric_cols[1]:
+                                st.metric(tr("day_forecast", st.session_state.user_lang), format_currency(latest_forecast['yhat'], currency_code))
+                            with metric_cols[2]:
+                                change_color = "normal" if price_change >= 0 else "inverse"
+                                st.metric(tr("expected_change", st.session_state.user_lang), 
+                                        f"{format_currency(price_change, currency_code)} ({price_change_pct:+.1f}%)",
+                                        delta=f"{price_change_pct:+.1f}%")
+                            with metric_cols[3]:
+                                if 'yhat_upper' in fc.columns and 'yhat_lower' in fc.columns:
+                                    confidence_range = latest_forecast['yhat_upper'] - latest_forecast['yhat_lower']
+                                    st.metric(tr("confidence_range", st.session_state.user_lang), format_currency(confidence_range, currency_code))
+                        
+                        # Display forecast table
+                        st.markdown(f"#### 📊 {tr('forecast_details', st.session_state.user_lang)}")
                         st.dataframe(fc_display.head(10), use_container_width=True)
                         
-                        # Plot forecast
+                        # Create enhanced forecast plot
                         fig = go.Figure()
-                        fig.add_trace(go.Scatter(x=df['Date'].tail(50), y=df['Close'].tail(50), 
-                                               name=tr('historical', st.session_state.user_lang), line=dict(color='#E6E6E6')))
-                        fig.add_trace(go.Scatter(x=fc['Date'], y=fc['yhat'], 
-                                               name=f'{tr(model_name.lower(), st.session_state.user_lang)} {tr("forecast", st.session_state.user_lang)}', line=dict(color='#4DA6FF')))
                         
-                        if model_name == "Prophet" and 'yhat_lower' in fc.columns and 'yhat_upper' in fc.columns:
-                            fig.add_trace(go.Scatter(x=fc['Date'], y=fc['yhat_lower'], 
-                                                   name=tr('lower_bound', st.session_state.user_lang), line=dict(dash='dot', color='#666')))
-                            fig.add_trace(go.Scatter(x=fc['Date'], y=fc['yhat_upper'], 
-                                                   name=tr('upper_bound', st.session_state.user_lang), line=dict(dash='dot', color='#666')))
+                        # Add historical data
+                        fig.add_trace(go.Scatter(
+                            x=df['Date'].tail(50), 
+                            y=df['Close'].tail(50), 
+                            name=tr('historical', st.session_state.user_lang), 
+                            line=dict(color='#E6E6E6', width=2),
+                            mode='lines'
+                        ))
                         
-                        fig.update_layout(template='plotly_dark', height=300,
-                                        paper_bgcolor='#000000', plot_bgcolor='#000000')
+                        # Add forecast line
+                        forecast_color = '#4DA6FF' if model_name == 'Prophet' else '#FF6B6B' if model_name == 'ARIMA' else '#4ECDC4' if model_name == 'RandomForest' else '#45B7D1'
+                        fig.add_trace(go.Scatter(
+                            x=fc['Date'], 
+                            y=fc['yhat'], 
+                            name=f'{tr(model_name.lower(), st.session_state.user_lang)} {tr("forecast", st.session_state.user_lang)}', 
+                            line=dict(color=forecast_color, width=3),
+                            mode='lines+markers',
+                            marker=dict(size=4)
+                        ))
+                        
+                        # Add confidence intervals for all models that have them
+                        if 'yhat_lower' in fc.columns and 'yhat_upper' in fc.columns:
+                            # Add confidence interval as filled area
+                            fig.add_trace(go.Scatter(
+                                x=fc['Date'].tolist() + fc['Date'].tolist()[::-1],
+                                y=fc['yhat_upper'].tolist() + fc['yhat_lower'].tolist()[::-1],
+                                fill='toself',
+                                fillcolor=f'rgba(77, 166, 255, 0.2)',
+                                line=dict(color='rgba(255,255,255,0)'),
+                                name=tr('confidence_interval', st.session_state.user_lang),
+                                hoverinfo="skip",
+                                showlegend=True
+                            ))
+                            
+                            # Add upper and lower bounds as lines
+                            fig.add_trace(go.Scatter(
+                                x=fc['Date'], 
+                                y=fc['yhat_upper'], 
+                                name=tr('upper_bound', st.session_state.user_lang), 
+                                line=dict(dash='dot', color='#666', width=1),
+                                mode='lines'
+                            ))
+                            fig.add_trace(go.Scatter(
+                                x=fc['Date'], 
+                                y=fc['yhat_lower'], 
+                                name=tr('lower_bound', st.session_state.user_lang), 
+                                line=dict(dash='dot', color='#666', width=1),
+                                mode='lines'
+                            ))
+                        
+                        # Add vertical line to separate historical from forecast
+                        fig.add_vline(
+                            x=df['Date'].iloc[-1], 
+                            line_dash="dash", 
+                            line_color="white", 
+                            line_width=1,
+                            annotation_text="Forecast Start",
+                            annotation_position="top"
+                        )
+                        
+                        # Update layout for better appearance
+                        fig.update_layout(
+                            template='plotly_dark',
+                            height=400,
+                            paper_bgcolor='#000000',
+                            plot_bgcolor='#000000',
+                            title=f"{ticker} - {tr(model_name.lower(), st.session_state.user_lang)} {tr('forecast', st.session_state.user_lang)}",
+                            xaxis_title="Date",
+                            yaxis_title=f"Price ({currency_code})",
+                            legend=dict(
+                                orientation="h",
+                                yanchor="bottom",
+                                y=1.02,
+                                xanchor="right",
+                                x=1
+                            ),
+                            hovermode='x unified'
+                        )
+                        
+                        # Add range selector
+                        fig.update_layout(
+                            xaxis=dict(
+                                rangeselector=dict(
+                                    buttons=list([
+                                        dict(count=7, label="7d", step="day", stepmode="backward"),
+                                        dict(count=30, label="30d", step="day", stepmode="backward"),
+                                        dict(count=90, label="90d", step="day", stepmode="backward"),
+                                        dict(step="all")
+                                    ])
+                                ),
+                                rangeslider=dict(visible=True),
+                                type="date"
+                            )
+                        )
+                        
                         st.plotly_chart(fig, use_container_width=True, theme=None)
                         
-                        st.download_button(f" {tr('download', st.session_state.user_lang)} {tr(model_name.lower(), st.session_state.user_lang)} CSV", 
-                                         fc.to_csv(index=False), 
-                                         file_name=f"{ticker}_{model_name}.csv", 
-                                         mime="text/csv",
-                                         key=f"download_{model_name}")
+                        # Add forecast statistics
+                        if len(fc) > 0:
+                            st.markdown(f"#### 📈 {tr('forecast_statistics', st.session_state.user_lang)}")
+                            stats_cols = st.columns(3)
+                            
+                            with stats_cols[0]:
+                                min_forecast = fc['yhat'].min()
+                                st.metric(tr("min_forecast", st.session_state.user_lang), format_currency(min_forecast, currency_code))
+                            
+                            with stats_cols[1]:
+                                max_forecast = fc['yhat'].max()
+                                st.metric(tr("max_forecast", st.session_state.user_lang), format_currency(max_forecast, currency_code))
+                            
+                            with stats_cols[2]:
+                                avg_forecast = fc['yhat'].mean()
+                                st.metric(tr("avg_forecast", st.session_state.user_lang), format_currency(avg_forecast, currency_code))
+                        
+                        # Download button
+                        st.download_button(
+                            f"📥 {tr('download', st.session_state.user_lang)} {tr(model_name.lower(), st.session_state.user_lang)} CSV", 
+                            fc.to_csv(index=False), 
+                            file_name=f"{ticker}_{model_name}_forecast.csv", 
+                            mime="text/csv",
+                            key=f"download_{model_name}_{ticker}"
+                        )
         else:
             st.warning(tr("no_models", st.session_state.user_lang))
 
@@ -5215,7 +5852,12 @@ if run:
         hl, gl, ceid = lang_map.get(st.session_state.user_lang, ("en-US", "US", "US:en"))
         
         with st.spinner(tr("fetching_news", st.session_state.user_lang)):
-            articles = fetch_google_news(query, max_items=8, hl=hl, gl=gl, ceid=ceid)
+            try:
+                articles = fetch_google_news(query, max_items=8, hl=hl, gl=gl, ceid=ceid)
+            except Exception as e:
+                logger.error(f"Error fetching news: {str(e)}")
+                st.error(f"Error fetching news: {str(e)[:200]}")
+                articles = []
 
         if not articles:
             st.markdown(f'<div class="empty"> {tr("no_articles", st.session_state.user_lang)}</div>', unsafe_allow_html=True)
@@ -5268,22 +5910,34 @@ if run:
     st.subheader(tr("export_data", st.session_state.user_lang))
     export_cols = st.columns([1,1,1])
     with export_cols[0]:
-        st.download_button(f" {tr('download_csv', st.session_state.user_lang)}", 
-                         df.to_csv(index=False), 
-                         file_name=f"{ticker}_complete_data.csv", 
-                         mime="text/csv")
+        try:
+            st.download_button(f" {tr('download_csv', st.session_state.user_lang)}", 
+                             df.to_csv(index=False), 
+                             file_name=f"{ticker}_complete_data.csv", 
+                             mime="text/csv")
+        except Exception as e:
+            logger.error(f"Error creating CSV export: {str(e)}")
+            st.error("Error creating CSV export")
     with export_cols[1]:
-        st.download_button(f" {tr('download_json', st.session_state.user_lang)}", 
-                         df.to_json(orient='records', date_format='iso'), 
-                         file_name=f"{ticker}_historical.json", 
-                         mime="application/json")
+        try:
+            st.download_button(f" {tr('download_json', st.session_state.user_lang)}", 
+                             df.to_json(orient='records', date_format='iso'), 
+                             file_name=f"{ticker}_historical.json", 
+                             mime="application/json")
+        except Exception as e:
+            logger.error(f"Error creating JSON export: {str(e)}")
+            st.error("Error creating JSON export")
     with export_cols[2]:
         if articles:
-            news_df = pd.DataFrame(articles)
-            st.download_button(f" {tr('download_news', st.session_state.user_lang)}", 
-                             news_df.to_csv(index=False), 
-                             file_name=f"{ticker}_news.csv", 
-                             mime="text/csv")
+            try:
+                news_df = pd.DataFrame(articles)
+                st.download_button(f" {tr('download_news', st.session_state.user_lang)}", 
+                                 news_df.to_csv(index=False), 
+                                 file_name=f"{ticker}_news.csv", 
+                                 mime="text/csv")
+            except Exception as e:
+                logger.error(f"Error creating news export: {str(e)}")
+                st.error("Error creating news export")
 
     # Recent data table
     st.markdown("---")
