@@ -16,12 +16,174 @@ import html
 import re
 import time
 import locale
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 # Set locale for proper number formatting
 try:
     locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
 except:
     pass
+
+# --------------------------
+# Rate Limiting for Yahoo Finance
+# --------------------------
+_last_request_time = 0
+_rate_limit_lock = threading.Lock()
+
+def rate_limit(min_interval=1.0):
+    """Rate limiting to prevent hitting Yahoo Finance API limits"""
+    global _last_request_time
+    with _rate_limit_lock:
+        elapsed = time.time() - _last_request_time
+        if elapsed < min_interval:
+            time.sleep(min_interval - elapsed)
+        _last_request_time = time.time()
+
+# --------------------------
+# Input Validation
+# --------------------------
+def validate_ticker_input(ticker: str) -> tuple[bool, str]:
+    """
+    Validate ticker symbol input for security and format
+    
+    Args:
+        ticker: Input ticker symbol
+        
+    Returns:
+        tuple: (is_valid, error_message)
+    """
+    if not ticker or not isinstance(ticker, str):
+        return False, "Ticker symbol is required"
+    
+    # Clean the ticker
+    ticker = ticker.strip().upper()
+    
+    # Whitelist validation - only allow alphanumeric, dots, dashes, underscores, and equals
+    if not re.match(r'^[A-Z0-9\.\-_=]{1,10}$', ticker):
+        return False, "Invalid ticker format. Only letters, numbers, dots, dashes, underscores, and equals are allowed (max 10 characters)"
+    
+    # Additional security checks
+    if len(ticker) < 1:
+        return False, "Ticker symbol cannot be empty"
+    
+    if ticker in ['', 'NULL', 'NONE', 'NAN']:
+        return False, "Invalid ticker symbol"
+    
+    # Check for potential injection attempts
+    dangerous_patterns = ['<', '>', '&', '"', "'", ';', '(', ')', 'script', 'javascript', 'onload']
+    if any(pattern in ticker.lower() for pattern in dangerous_patterns):
+        return False, "Ticker symbol contains invalid characters"
+    
+    return True, ""
+
+def sanitize_ticker(ticker: str) -> str:
+    """Sanitize ticker input by removing dangerous characters"""
+    if not ticker:
+        return ""
+    
+    # Remove any non-alphanumeric characters except allowed ones
+    sanitized = re.sub(r'[^A-Za-z0-9\.\-_=]', '', ticker.strip().upper())
+    return sanitized[:10]  # Limit length
+
+# --------------------------
+# Logging System
+# --------------------------
+import logging
+import os
+
+def setup_logging():
+    """Setup logging configuration for production debugging"""
+    # Create logs directory if it doesn't exist
+    os.makedirs('logs', exist_ok=True)
+    
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('logs/pointblank.log'),
+            logging.StreamHandler()  # Also log to console
+        ]
+    )
+    
+    # Create logger
+    logger = logging.getLogger('pointblank')
+    return logger
+
+# Initialize logger
+logger = setup_logging()
+
+# --------------------------
+# Model Caching System
+# --------------------------
+import hashlib
+import pickle
+import os
+
+def get_data_hash(df: pd.DataFrame, model_type: str) -> str:
+    """Generate a hash for the dataset to use as cache key"""
+    # Use relevant columns for hashing
+    relevant_cols = ['Close', 'Volume', 'High', 'Low', 'Open']
+    if 'RSI' in df.columns:
+        relevant_cols.append('RSI')
+    if 'MACD' in df.columns:
+        relevant_cols.append('MACD')
+    
+    # Create a hash of the data
+    data_str = str(df[relevant_cols].values.tobytes()) + str(len(df)) + model_type
+    return hashlib.md5(data_str.encode()).hexdigest()
+
+def save_model_cache(model, scaler, data_hash: str, model_type: str):
+    """Save trained model and scaler to cache"""
+    cache_dir = f"models/{model_type}"
+    os.makedirs(cache_dir, exist_ok=True)
+    
+    try:
+        # Save model
+        if model_type == "LSTM":
+            model.save(f"{cache_dir}/model_{data_hash}.h5")
+        else:
+            with open(f"{cache_dir}/model_{data_hash}.pkl", 'wb') as f:
+                pickle.dump(model, f)
+        
+        # Save scaler
+        with open(f"{cache_dir}/scaler_{data_hash}.pkl", 'wb') as f:
+            pickle.dump(scaler, f)
+        
+        logger.info(f"Model cached: {model_type}_{data_hash}")
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to cache model {model_type}: {str(e)}")
+        return False
+
+def load_model_cache(data_hash: str, model_type: str):
+    """Load trained model and scaler from cache"""
+    cache_dir = f"models/{model_type}"
+    
+    try:
+        # Load model
+        if model_type == "LSTM":
+            if not os.path.exists(f"{cache_dir}/model_{data_hash}.h5"):
+                return None, None
+            model = keras.models.load_model(f"{cache_dir}/model_{data_hash}.h5")
+        else:
+            if not os.path.exists(f"{cache_dir}/model_{data_hash}.pkl"):
+                return None, None
+            with open(f"{cache_dir}/model_{data_hash}.pkl", 'rb') as f:
+                model = pickle.load(f)
+        
+        # Load scaler
+        if not os.path.exists(f"{cache_dir}/scaler_{data_hash}.pkl"):
+            return model, None
+        with open(f"{cache_dir}/scaler_{data_hash}.pkl", 'rb') as f:
+            scaler = pickle.load(f)
+        
+        logger.info(f"Model loaded from cache: {model_type}_{data_hash}")
+        return model, scaler
+    except Exception as e:
+        logger.warning(f"Failed to load cached model {model_type}: {str(e)}")
+        return None, None
 
 # --------------------------
 # ML libraries
@@ -2798,9 +2960,18 @@ def fetch_yahoo_data(ticker: str, period="6mo", interval="1d", max_retries=3) ->
     import time
     from requests.exceptions import RequestException
     
+    # Validate and sanitize ticker input
+    is_valid, error_msg = validate_ticker_input(ticker)
+    if not is_valid:
+        logger.error(f"Invalid ticker input: {ticker} - {error_msg}")
+        st.error(f"❌ {error_msg}")
+        return pd.DataFrame()
+    
+    logger.info(f"Fetching data for ticker: {ticker}")
+    
     # Clean the ticker symbol (in case it's in the "SYMBOL — Description" format)
     m = re.match(r"^([A-Za-z0-9\-\._=]+)", ticker or "")
-    clean_ticker = m.group(1) if m else ticker
+    clean_ticker = m.group(1) if m else sanitize_ticker(ticker)
     
     if not clean_ticker:
         st.error("No ticker symbol provided")
@@ -2811,6 +2982,9 @@ def fetch_yahoo_data(ticker: str, period="6mo", interval="1d", max_retries=3) ->
     
     for attempt in range(max_retries):
         try:
+            # Apply rate limiting
+            rate_limit(min_interval=1.0)
+            
             # Create Ticker object
             t = yf.Ticker(clean_ticker)
             
@@ -2819,10 +2993,12 @@ def fetch_yahoo_data(ticker: str, period="6mo", interval="1d", max_retries=3) ->
             
             # Validate data
             if df is None or df.empty:
+                logger.warning(f"Attempt {attempt + 1} failed for {clean_ticker} - no data returned")
                 if attempt < max_retries - 1:
                     st.warning(f"Attempt {attempt + 1} failed for {clean_ticker}. Retrying...")
                     time.sleep(2 ** attempt)  # Exponential backoff
                     continue
+                logger.error(f"Failed to fetch data for {clean_ticker} after {max_retries} attempts")
                 st.error(f"❌ No data returned for {clean_ticker} after {max_retries} attempts.")
                 st.info(" **Troubleshooting tips:**")
                 st.info("• Check if the ticker symbol is correct (e.g., AAPL, TSLA, BTC-USD)")
@@ -2905,7 +3081,7 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df['MACD'] = df['EMA12'] - df['EMA26']
     df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
     df['BB_MID'] = df['Close'].rolling(20).mean()
-    df['BB_STD'] = df['Close'].rolling(20).std(ddof=0).fillna(0)
+    df['BB_STD'] = df['Close'].rolling(20).std().fillna(0)  # Fixed: use sample std (ddof=1)
     df['BB_UP'] = df['BB_MID'] + 2*df['BB_STD']
     df['BB_LOW'] = df['BB_MID'] - 2*df['BB_STD']
     delta = df['Close'].diff()
@@ -2913,15 +3089,108 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     down = -delta.clip(upper=0)
     roll_up = up.rolling(14).mean()
     roll_down = down.rolling(14).mean()
-    rs = roll_up / (roll_down + 1e-8)
+    
+    # Handle division by zero properly
+    roll_down_safe = roll_down.replace(0, np.nan)
+    rs = roll_up / roll_down_safe
     df['RSI'] = 100 - (100 / (1 + rs))
-    df['RSI'] = df['RSI'].clip(0,100).fillna(50)
+    df['RSI'] = df['RSI'].fillna(50)  # Only fill NaN from initial window, not from clipping
+    
+    # ==============================
+    # Advanced Technical Indicators
+    # ==============================
+    
+    # ADX (Average Directional Index) - Trend Strength
+    def calculate_adx(df, period=14):
+        high = df['High']
+        low = df['Low']
+        close = df['Close']
+        
+        # True Range
+        tr1 = high - low
+        tr2 = abs(high - close.shift(1))
+        tr3 = abs(low - close.shift(1))
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        
+        # Directional Movement
+        plus_dm = high.diff()
+        minus_dm = low.diff()
+        
+        plus_dm[plus_dm < 0] = 0
+        minus_dm[minus_dm > 0] = 0
+        minus_dm = abs(minus_dm)
+        
+        # Smoothed values
+        atr = tr.rolling(period).mean()
+        plus_di = 100 * (plus_dm.rolling(period).mean() / atr)
+        minus_di = 100 * (minus_dm.rolling(period).mean() / atr)
+        
+        # ADX calculation
+        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+        adx = dx.rolling(period).mean()
+        
+        return adx, plus_di, minus_di
+    
+    # Stochastic Oscillator
+    def calculate_stochastic(df, k_period=14, d_period=3):
+        low_min = df['Low'].rolling(window=k_period).min()
+        high_max = df['High'].rolling(window=k_period).max()
+        
+        k_percent = 100 * ((df['Close'] - low_min) / (high_max - low_min))
+        d_percent = k_percent.rolling(window=d_period).mean()
+        
+        return k_percent, d_percent
+    
+    # VWAP (Volume Weighted Average Price)
+    def calculate_vwap(df):
+        typical_price = (df['High'] + df['Low'] + df['Close']) / 3
+        vwap = (typical_price * df['Volume']).cumsum() / df['Volume'].cumsum()
+        return vwap
+    
+    # OBV (On-Balance Volume)
+    def calculate_obv(df):
+        obv = np.where(df['Close'] > df['Close'].shift(1), df['Volume'], 
+                      np.where(df['Close'] < df['Close'].shift(1), -df['Volume'], 0)).cumsum()
+        return pd.Series(obv, index=df.index)
+    
+    # Calculate advanced indicators
+    try:
+        df['ADX'], df['DI_Plus'], df['DI_Minus'] = calculate_adx(df)
+        df['Stoch_K'], df['Stoch_D'] = calculate_stochastic(df)
+        df['VWAP'] = calculate_vwap(df)
+        df['OBV'] = calculate_obv(df)
+        
+        # Fill NaN values for new indicators
+        df['ADX'] = df['ADX'].fillna(25)  # Neutral ADX
+        df['DI_Plus'] = df['DI_Plus'].fillna(25)
+        df['DI_Minus'] = df['DI_Minus'].fillna(25)
+        df['Stoch_K'] = df['Stoch_K'].fillna(50)
+        df['Stoch_D'] = df['Stoch_D'].fillna(50)
+        df['VWAP'] = df['VWAP'].fillna(df['Close'])
+        df['OBV'] = df['OBV'].fillna(0)
+        
+        logger.info("Advanced technical indicators calculated successfully")
+        
+    except Exception as e:
+        logger.warning(f"Failed to calculate some advanced indicators: {str(e)}")
+        # Fill with default values if calculation fails
+        df['ADX'] = 25
+        df['DI_Plus'] = 25
+        df['DI_Minus'] = 25
+        df['Stoch_K'] = 50
+        df['Stoch_D'] = 50
+        df['VWAP'] = df['Close']
+        df['OBV'] = 0
+    
     return df
 
 def plot_advanced(df: pd.DataFrame, title: str, show_indicators: bool = True):
-    fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
-                        row_heights=[0.6,0.18,0.22],
-                        vertical_spacing=0.03)
+    fig = make_subplots(rows=4, cols=1, shared_xaxes=True,
+                        row_heights=[0.5, 0.15, 0.15, 0.2],
+                        vertical_spacing=0.03,
+                        subplot_titles=('Price & Technical Indicators', 'Volume & VWAP', 'Momentum Indicators', 'Trend Strength'))
+    
+    # Price chart with indicators
     fig.add_trace(go.Candlestick(x=df['Date'], open=df['Open'], high=df['High'],
                                  low=df['Low'], close=df['Close'], name='Price'), row=1, col=1)
     if show_indicators:
@@ -2929,10 +3198,32 @@ def plot_advanced(df: pd.DataFrame, title: str, show_indicators: bool = True):
         fig.add_trace(go.Scatter(x=df['Date'], y=df['MA50'], name='MA50', line=dict(width=1.4, dash='dash')), row=1, col=1)
         fig.add_trace(go.Scatter(x=df['Date'], y=df['BB_UP'], name='BB_UP', line=dict(width=1, dash='dot')), row=1, col=1)
         fig.add_trace(go.Scatter(x=df['Date'], y=df['BB_LOW'], name='BB_LOW', line=dict(width=1, dash='dot')), row=1, col=1)
+        if 'VWAP' in df.columns:
+            fig.add_trace(go.Scatter(x=df['Date'], y=df['VWAP'], name='VWAP', line=dict(width=1.5, color='yellow')), row=1, col=1)
+    
+    # Volume and VWAP
     fig.add_trace(go.Bar(x=df['Date'], y=df['Volume'], name='Volume', marker_color='gray', opacity=0.3), row=2, col=1)
+    if 'OBV' in df.columns:
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['OBV'], name='OBV', line=dict(width=1.2, color='orange')), row=2, col=1)
+    
+    # Momentum indicators (RSI, Stochastic)
     fig.add_trace(go.Scatter(x=df['Date'], y=df['RSI'], name='RSI', line=dict(width=1.2)), row=3, col=1)
-    fig.add_hline(y=70, line_dash='dot', row=3, col=1)
-    fig.add_hline(y=30, line_dash='dot', row=3, col=1)
+    if 'Stoch_K' in df.columns and 'Stoch_D' in df.columns:
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['Stoch_K'], name='Stoch %K', line=dict(width=1)), row=3, col=1)
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['Stoch_D'], name='Stoch %D', line=dict(width=1, dash='dash')), row=3, col=1)
+    
+    # Trend strength (ADX)
+    if 'ADX' in df.columns:
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['ADX'], name='ADX', line=dict(width=1.2, color='purple')), row=4, col=1)
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['DI_Plus'], name='DI+', line=dict(width=1, color='green')), row=4, col=1)
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['DI_Minus'], name='DI-', line=dict(width=1, color='red')), row=4, col=1)
+    
+    # Add reference lines
+    fig.add_hline(y=70, line_dash='dot', row=3, col=1, line_color='red')
+    fig.add_hline(y=30, line_dash='dot', row=3, col=1, line_color='green')
+    fig.add_hline(y=25, line_dash='dot', row=4, col=1, line_color='orange', annotation_text="Weak Trend")
+    fig.add_hline(y=50, line_dash='dot', row=4, col=1, line_color='yellow', annotation_text="Strong Trend")
+    
     fig.update_layout(template='plotly_dark', title=title,
                       margin=dict(l=20,r=20,t=40,b=10),
                       paper_bgcolor='#000000', plot_bgcolor='#000000',
@@ -2993,6 +3284,7 @@ def get_currency_info(ticker: str):
 # Forecasting Models
 # --------------------------
 def forecast_all(df: pd.DataFrame, periods: int = 30):
+    logger.info(f"Starting forecast generation for {len(df)} data points, {periods} periods ahead")
     forecasts = {}
 
     # ==============================
@@ -3036,10 +3328,24 @@ def forecast_all(df: pd.DataFrame, periods: int = 30):
             future = m.make_future_dataframe(periods=periods, freq='D')
             future['ds'] = pd.to_datetime(future['ds']).dt.tz_localize(None)
 
+            # Realistic regressor forward-filling with mean reversion
             for col in ['volume', 'rsi', 'macd', 'ma20', 'ma50']:
                 if col in prophet_df.columns:
                     last_val = prophet_df[col].iloc[-1]
-                    future[col] = last_val
+                    hist_mean = prophet_df[col].mean()
+                    
+                    # Create realistic decay pattern
+                    if col == 'rsi':
+                        # RSI should mean-revert to 50
+                        decay_values = np.linspace(last_val, 50, periods)
+                    elif col == 'volume':
+                        # Volume should decay to historical mean
+                        decay_values = np.linspace(last_val, hist_mean, periods)
+                    else:
+                        # Technical indicators: gradual mean reversion
+                        decay_values = np.linspace(last_val, hist_mean, periods)
+                    
+                    future[col] = decay_values
 
             forecast = m.predict(future)
             fc = forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].rename(columns={'ds': 'Date'})
@@ -3065,16 +3371,32 @@ def forecast_all(df: pd.DataFrame, periods: int = 30):
                 # Use simple ARIMA if dataset is small
                 order = (5, 1, 0) if len(series) < 500 else None
                 if order is None:
-                    import pmdarima as pm
-                    model = pm.auto_arima(series, seasonal=False, stepwise=True, suppress_warnings=True, max_p=10, max_q=10)
-                    order = model.order
-            except Exception:
+                    try:
+                        import pmdarima as pm
+                        model = pm.auto_arima(series, seasonal=True, m=7, D=1, stepwise=True, 
+                                            suppress_warnings=True, max_p=10, max_q=10)
+                        order = model.order
+                    except ImportError:
+                        st.warning("pmdarima not available, using fallback ARIMA order")
+                        order = (5, 1, 0)
+            except Exception as e:
+                st.warning(f"ARIMA order selection failed: {str(e)[:100]}, using fallback")
                 order = (5, 1, 0)  # fallback
 
             model = ARIMA(series, order=order).fit()
-            fc = model.forecast(steps=periods)
+            
+            # Get forecast with confidence intervals
+            fc_result = model.get_forecast(steps=periods)
+            fc_mean = fc_result.predicted_mean
+            fc_ci = fc_result.conf_int(alpha=0.05)  # 95% confidence interval
+            
             dates = pd.date_range(start=series.index[-1] + timedelta(days=1), periods=periods)
-            forecasts['ARIMA'] = pd.DataFrame({'Date': dates, 'yhat': fc.values})
+            forecasts['ARIMA'] = pd.DataFrame({
+                'Date': dates, 
+                'yhat': fc_mean.values,
+                'yhat_lower': fc_ci.iloc[:, 0].values,
+                'yhat_upper': fc_ci.iloc[:, 1].values
+            })
 
         except Exception as e:
             st.error(f"{tr('arima_error', st.session_state.user_lang)}: {e}")
@@ -3112,19 +3434,51 @@ def forecast_all(df: pd.DataFrame, periods: int = 30):
             st.error(f"{tr('rf_error', st.session_state.user_lang)}: {e}")
 
     # ==============================
-    # Enhanced LSTM
+    # Enhanced LSTM with Caching
     # ==============================
     if HAS_TF and HAS_SKLEARN:
         try:
-            features_df = df.copy()
-            feature_cols = ['Close', 'Volume', 'High', 'Low', 'Open']
-            extra_cols = ['RSI', 'MACD', 'MA20', 'MA50']
-            feature_cols.extend([c for c in extra_cols if c in df.columns])
+            logger.info("Starting LSTM model training")
+            
+            # Generate data hash for caching
+            data_hash = get_data_hash(df, "LSTM")
+            
+            # Try to load from cache first
+            cached_model, cached_scaler = load_model_cache(data_hash, "LSTM")
+            
+            if cached_model is not None and cached_scaler is not None:
+                logger.info("Using cached LSTM model")
+                scaler = cached_scaler
+                model = cached_model
+                
+                # Prepare data for prediction
+                features_df = df.copy()
+                feature_cols = ['Close', 'Volume', 'High', 'Low', 'Open']
+                extra_cols = ['RSI', 'MACD', 'MA20', 'MA50']
+                feature_cols.extend([c for c in extra_cols if c in df.columns])
+                feature_data = features_df[feature_cols].fillna(method='ffill').fillna(method='bfill')
+                scaled_data = scaler.transform(feature_data)
+            else:
+                # Train new model
+                logger.info("Training new LSTM model")
+                features_df = df.copy()
+                feature_cols = ['Close', 'Volume', 'High', 'Low', 'Open']
+                extra_cols = ['RSI', 'MACD', 'MA20', 'MA50']
+                feature_cols.extend([c for c in extra_cols if c in df.columns])
 
-            feature_data = features_df[feature_cols].fillna(method='ffill').fillna(method='bfill')
+                feature_data = features_df[feature_cols].fillna(method='ffill').fillna(method='bfill')
 
-            scaler = MinMaxScaler()
-            scaled_data = scaler.fit_transform(feature_data)
+                # CRITICAL FIX: Fit scaler ONLY on training data to prevent data leakage
+                train_size = int(len(feature_data) * 0.8)
+                train_data = feature_data.iloc[:train_size]
+                test_data = feature_data.iloc[train_size:]
+
+                scaler = MinMaxScaler()
+                scaled_train = scaler.fit_transform(train_data)
+                scaled_test = scaler.transform(test_data)  # Use trained scaler
+                
+                # Combine scaled data
+                scaled_data = np.vstack([scaled_train, scaled_test])
 
             # Adjust sequence length for small datasets
             default_sequence_length = 60
@@ -3191,8 +3545,11 @@ def forecast_all(df: pd.DataFrame, periods: int = 30):
                         callbacks=callbacks_list,
                         verbose=0
                     )
+                    
+                    # Save model to cache
+                    save_model_cache(model, scaler, data_hash, "LSTM")
 
-                    # Iterative forecasting
+                    # Iterative forecasting with realistic feature evolution
                     last_sequence = scaled_data[-sequence_length:]
                     predictions_scaled = []
 
@@ -3201,8 +3558,35 @@ def forecast_all(df: pd.DataFrame, periods: int = 30):
                         pred_scaled = float(model.predict(seq_input, verbose=0)[0, 0])
                         predictions_scaled.append(pred_scaled)
 
+                        # Create realistic new row with feature evolution
                         new_row = last_sequence[-1].copy()
-                        new_row[0] = pred_scaled
+                        new_row[0] = pred_scaled  # Predicted close
+                        
+                        # Volume: decay to historical mean with some randomness
+                        if len(feature_cols) > 1:  # Volume column exists
+                            hist_volume_mean = scaled_data[:, 1].mean()
+                            volume_decay = 0.9
+                            new_row[1] = new_row[1] * volume_decay + hist_volume_mean * (1 - volume_decay)
+                        
+                        # High/Low: reasonable spread around predicted close
+                        if len(feature_cols) > 2:  # High column exists
+                            volatility = np.std(scaled_data[-60:, 0]) if len(scaled_data) >= 60 else 0.01
+                            spread = volatility * 0.5
+                            new_row[2] = min(1.0, pred_scaled + spread)  # High (capped at 1.0)
+                            new_row[3] = max(0.0, pred_scaled - spread)  # Low (capped at 0.0)
+                        
+                        # Open: close to previous close with small gap
+                        if len(feature_cols) > 4:  # Open column exists
+                            gap = np.random.normal(0, volatility * 0.1) if len(scaled_data) >= 60 else 0
+                            new_row[4] = np.clip(pred_scaled + gap, 0.0, 1.0)
+                        
+                        # Technical indicators: gradual mean reversion
+                        for i in range(5, len(feature_cols)):
+                            if i < len(new_row):
+                                hist_mean = scaled_data[:, i].mean()
+                                decay_factor = 0.95
+                                new_row[i] = new_row[i] * decay_factor + hist_mean * (1 - decay_factor)
+                        
                         last_sequence = np.vstack([last_sequence[1:], new_row])
 
                     # Inverse scaling
@@ -3218,8 +3602,389 @@ def forecast_all(df: pd.DataFrame, periods: int = 30):
                     forecasts['LSTM'] = pd.DataFrame({'Date': dates, 'yhat': predictions})
 
         except Exception as e:
+            logger.error(f"LSTM training failed: {str(e)}")
             st.error(f"{tr('lstm_error', st.session_state.user_lang)}: {e}")
 
+    logger.info(f"Forecast generation completed. Generated {len(forecasts)} models")
+    return forecasts
+
+# --------------------------
+# Parallel Forecasting System
+# --------------------------
+def forecast_prophet(df: pd.DataFrame, periods: int = 30):
+    """Prophet forecasting function for parallel execution"""
+    if not HAS_PROPHET:
+        return None
+    
+    try:
+        prophet_df = df[['Date', 'Close']].rename(columns={'Date': 'ds', 'Close': 'y'}).copy()
+        prophet_df['ds'] = pd.to_datetime(prophet_df['ds']).dt.tz_localize(None)
+
+        # Dynamic changepoint scale (more flexible if volatile)
+        vol = prophet_df['y'].pct_change().std()
+        changepoint_scale = 0.05 if vol < 0.02 else 0.2
+
+        m = Prophet(
+            growth='linear',
+            daily_seasonality=True,
+            weekly_seasonality=True,
+            yearly_seasonality=True,
+            seasonality_mode='multiplicative',
+            changepoint_prior_scale=changepoint_scale,
+            seasonality_prior_scale=15.0,
+            holidays_prior_scale=15.0,
+            interval_width=0.95,
+            uncertainty_samples=1000
+        )
+
+        # Add custom seasonalities
+        m.add_seasonality(name='monthly', period=30.5, fourier_order=8)
+        m.add_seasonality(name='quarterly', period=91.25, fourier_order=10)
+
+        # Add known regressors
+        for col in ['Volume', 'RSI', 'MACD', 'MA20', 'MA50']:
+            if col in df.columns:
+                prophet_df[col.lower()] = df[col].fillna(df[col].mean())
+                m.add_regressor(col.lower())
+
+        m.fit(prophet_df)
+
+        # Future DataFrame
+        future = m.make_future_dataframe(periods=periods, freq='D')
+        future['ds'] = pd.to_datetime(future['ds']).dt.tz_localize(None)
+
+        # Realistic regressor forward-filling with mean reversion
+        for col in ['volume', 'rsi', 'macd', 'ma20', 'ma50']:
+            if col in prophet_df.columns:
+                last_val = prophet_df[col].iloc[-1]
+                hist_mean = prophet_df[col].mean()
+                
+                # Create realistic decay pattern
+                if col == 'rsi':
+                    # RSI should mean-revert to 50
+                    decay_values = np.linspace(last_val, 50, periods)
+                elif col == 'volume':
+                    # Volume should decay to historical mean
+                    decay_values = np.linspace(last_val, hist_mean, periods)
+                else:
+                    # Technical indicators: gradual mean reversion
+                    decay_values = np.linspace(last_val, hist_mean, periods)
+                
+                future[col] = decay_values
+
+        forecast = m.predict(future)
+        fc = forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].rename(columns={'ds': 'Date'})
+        return fc
+
+    except Exception as e:
+        logger.error(f"Prophet forecasting failed: {str(e)}")
+        return None
+
+def forecast_arima(df: pd.DataFrame, periods: int = 30):
+    """ARIMA forecasting function for parallel execution"""
+    if not HAS_ARIMA:
+        return None
+    
+    try:
+        series = df.set_index('Date')['Close'].sort_index()
+        series.index = pd.to_datetime(series.index).tz_localize(None)
+
+        # Fill missing dates
+        daily_idx = pd.date_range(series.index.min(), series.index.max(), freq='D')
+        series = series.reindex(daily_idx).ffill().bfill()  # forward & backward fill
+
+        # Automatic order selection if dataset is large enough
+        try:
+            # Use simple ARIMA if dataset is small
+            order = (5, 1, 0) if len(series) < 500 else None
+            if order is None:
+                try:
+                    import pmdarima as pm
+                    model = pm.auto_arima(series, seasonal=True, m=7, D=1, stepwise=True, 
+                                        suppress_warnings=True, max_p=10, max_q=10)
+                    order = model.order
+                except ImportError:
+                    logger.warning("pmdarima not available, using fallback ARIMA order")
+                    order = (5, 1, 0)
+        except Exception as e:
+            logger.warning(f"ARIMA order selection failed: {str(e)[:100]}, using fallback")
+            order = (5, 1, 0)  # fallback
+
+        model = ARIMA(series, order=order).fit()
+        
+        # Get forecast with confidence intervals
+        fc_result = model.get_forecast(steps=periods)
+        fc_mean = fc_result.predicted_mean
+        fc_ci = fc_result.conf_int(alpha=0.05)  # 95% confidence interval
+        
+        dates = pd.date_range(start=series.index[-1] + timedelta(days=1), periods=periods)
+        return pd.DataFrame({
+            'Date': dates, 
+            'yhat': fc_mean.values,
+            'yhat_lower': fc_ci.iloc[:, 0].values,
+            'yhat_upper': fc_ci.iloc[:, 1].values
+        })
+
+    except Exception as e:
+        logger.error(f"ARIMA forecasting failed: {str(e)}")
+        return None
+
+def forecast_random_forest(df: pd.DataFrame, periods: int = 30):
+    """Random Forest forecasting function for parallel execution"""
+    if not HAS_SKLEARN:
+        return None
+    
+    try:
+        data = df[['Close']].copy()
+        n_lags = min(10, len(data)//2)  # dynamic lag selection for small datasets
+
+        for lag in range(1, n_lags+1):
+            data[f'lag_{lag}'] = data['Close'].shift(lag)
+        data = data.dropna()
+
+        X = data[[f'lag_{i}' for i in range(1, n_lags+1)]].values
+        y = data['Close'].values
+
+        model = RandomForestRegressor(
+            n_estimators=500, 
+            max_depth=15,  # Limit depth to prevent overfitting
+            min_samples_split=20,
+            min_samples_leaf=10,
+            max_features='sqrt',  # Feature subsampling
+            random_state=42, 
+            n_jobs=-1
+        )
+        model.fit(X, y)
+
+        # Iterative multi-step forecast
+        last_window = X[-1].tolist()
+        preds = []
+        for _ in range(periods):
+            p = float(model.predict([last_window]))
+            preds.append(p)
+            last_window = [p] + last_window[:-1]
+
+        dates = pd.date_range(start=df['Date'].iloc[-1] + timedelta(days=1), periods=periods)
+        return pd.DataFrame({'Date': dates, 'yhat': preds})
+
+    except Exception as e:
+        logger.error(f"Random Forest forecasting failed: {str(e)}")
+        return None
+
+def forecast_lstm_parallel(df: pd.DataFrame, periods: int = 30):
+    """LSTM forecasting function for parallel execution"""
+    if not (HAS_TF and HAS_SKLEARN):
+        return None
+    
+    try:
+        logger.info("Starting LSTM model training (parallel)")
+        
+        # Generate data hash for caching
+        data_hash = get_data_hash(df, "LSTM")
+        
+        # Try to load from cache first
+        cached_model, cached_scaler = load_model_cache(data_hash, "LSTM")
+        
+        if cached_model is not None and cached_scaler is not None:
+            logger.info("Using cached LSTM model (parallel)")
+            scaler = cached_scaler
+            model = cached_model
+            
+            # Prepare data for prediction
+            features_df = df.copy()
+            feature_cols = ['Close', 'Volume', 'High', 'Low', 'Open']
+            extra_cols = ['RSI', 'MACD', 'MA20', 'MA50']
+            feature_cols.extend([c for c in extra_cols if c in df.columns])
+            feature_data = features_df[feature_cols].fillna(method='ffill').fillna(method='bfill')
+            scaled_data = scaler.transform(feature_data)
+        else:
+            # Train new model (simplified for parallel execution)
+            logger.info("Training new LSTM model (parallel)")
+            features_df = df.copy()
+            feature_cols = ['Close', 'Volume', 'High', 'Low', 'Open']
+            extra_cols = ['RSI', 'MACD', 'MA20', 'MA50']
+            feature_cols.extend([c for c in extra_cols if c in df.columns])
+
+            feature_data = features_df[feature_cols].fillna(method='ffill').fillna(method='bfill')
+
+            # CRITICAL FIX: Fit scaler ONLY on training data to prevent data leakage
+            train_size = int(len(feature_data) * 0.8)
+            train_data = feature_data.iloc[:train_size]
+            test_data = feature_data.iloc[train_size:]
+
+            scaler = MinMaxScaler()
+            scaled_train = scaler.fit_transform(train_data)
+            scaled_test = scaler.transform(test_data)  # Use trained scaler
+            
+            # Combine scaled data
+            scaled_data = np.vstack([scaled_train, scaled_test])
+
+        # Adjust sequence length for small datasets
+        default_sequence_length = 60
+        sequence_length = min(default_sequence_length, len(scaled_data) // 2)
+        if sequence_length < 10:
+            logger.warning("Insufficient data for LSTM")
+            return None
+
+        X_sequences, y_sequences = [], []
+
+        for i in range(sequence_length, len(scaled_data)):
+            X_sequences.append(scaled_data[i - sequence_length:i])
+            y_sequences.append(scaled_data[i, 0])  # Close price
+
+        X_sequences, y_sequences = np.array(X_sequences), np.array(y_sequences)
+
+        # Skip if still too few sequences
+        if len(X_sequences) < 50:
+            logger.warning("Insufficient sequences for LSTM")
+            return None
+
+        # Train-test split
+        train_size = int(len(X_sequences) * 0.8)
+        X_train, X_test = X_sequences[:train_size], X_sequences[train_size:]
+        y_train, y_test = y_sequences[:train_size], y_sequences[train_size:]
+
+        if cached_model is None:  # Only train if not cached
+            tf.keras.backend.clear_session()
+
+            model = Sequential([
+                LSTM(128, return_sequences=True, input_shape=(sequence_length, len(feature_cols))),
+                Dropout(0.3),
+                BatchNormalization(),
+
+                Bidirectional(LSTM(64, return_sequences=True)),
+                Dropout(0.3),
+                BatchNormalization(),
+
+                LSTM(32, return_sequences=False),
+                Dropout(0.2),
+
+                Dense(64, activation='relu'),
+                Dense(32, activation='relu'),
+                Dense(1, activation='linear')
+            ])
+
+            optimizer = optimizers.Adam(learning_rate=0.001)
+            model.compile(
+                optimizer=optimizer,
+                loss=tf.keras.losses.Huber(),
+                metrics=['mae', 'mse']
+            )
+
+            callbacks_list = [
+                callbacks.EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True),
+                callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-5),
+                callbacks.ModelCheckpoint("best_lstm.h5", save_best_only=True, monitor="val_loss")
+            ]
+
+            model.fit(
+                X_train, y_train,
+                epochs=100,
+                batch_size=32,
+                validation_data=(X_test, y_test),
+                callbacks=callbacks_list,
+                verbose=0
+            )
+            
+            # Save model to cache
+            save_model_cache(model, scaler, data_hash, "LSTM")
+
+        # Iterative forecasting with realistic feature evolution
+        last_sequence = scaled_data[-sequence_length:]
+        predictions_scaled = []
+
+        for _ in range(periods):
+            seq_input = last_sequence.reshape(1, sequence_length, len(feature_cols))
+            pred_scaled = float(model.predict(seq_input, verbose=0)[0, 0])
+            predictions_scaled.append(pred_scaled)
+
+            # Create realistic new row with feature evolution
+            new_row = last_sequence[-1].copy()
+            new_row[0] = pred_scaled  # Predicted close
+            
+            # Volume: decay to historical mean with some randomness
+            if len(feature_cols) > 1:  # Volume column exists
+                hist_volume_mean = scaled_data[:, 1].mean()
+                volume_decay = 0.9
+                new_row[1] = new_row[1] * volume_decay + hist_volume_mean * (1 - volume_decay)
+            
+            # High/Low: reasonable spread around predicted close
+            if len(feature_cols) > 2:  # High column exists
+                volatility = np.std(scaled_data[-60:, 0]) if len(scaled_data) >= 60 else 0.01
+                spread = volatility * 0.5
+                new_row[2] = min(1.0, pred_scaled + spread)  # High (capped at 1.0)
+                new_row[3] = max(0.0, pred_scaled - spread)  # Low (capped at 0.0)
+            
+            # Open: close to previous close with small gap
+            if len(feature_cols) > 4:  # Open column exists
+                gap = np.random.normal(0, volatility * 0.1) if len(scaled_data) >= 60 else 0
+                new_row[4] = np.clip(pred_scaled + gap, 0.0, 1.0)
+            
+            # Technical indicators: gradual mean reversion
+            for i in range(5, len(feature_cols)):
+                if i < len(new_row):
+                    hist_mean = scaled_data[:, i].mean()
+                    decay_factor = 0.95
+                    new_row[i] = new_row[i] * decay_factor + hist_mean * (1 - decay_factor)
+            
+            last_sequence = np.vstack([last_sequence[1:], new_row])
+
+        # Inverse scaling
+        pred_array = np.zeros((periods, len(feature_cols)))
+        pred_array[:, 0] = predictions_scaled
+        for i in range(1, len(feature_cols)):
+            pred_array[:, i] = scaled_data[-1, i]
+
+        pred_inverse = scaler.inverse_transform(pred_array)
+        predictions = pred_inverse[:, 0].tolist()
+
+        dates = pd.date_range(start=df['Date'].iloc[-1] + timedelta(days=1), periods=periods)
+        return pd.DataFrame({'Date': dates, 'yhat': predictions})
+
+    except Exception as e:
+        logger.error(f"LSTM forecasting failed: {str(e)}")
+        return None
+
+def forecast_all_parallel(df: pd.DataFrame, periods: int = 30):
+    """Parallelized version of forecast_all for better performance"""
+    logger.info(f"Starting parallel forecast generation for {len(df)} data points, {periods} periods ahead")
+    forecasts = {}
+
+    # Create a list of forecast functions to run in parallel
+    forecast_functions = []
+    
+    if HAS_PROPHET:
+        forecast_functions.append(('Prophet', forecast_prophet))
+    if HAS_ARIMA:
+        forecast_functions.append(('ARIMA', forecast_arima))
+    if HAS_SKLEARN:
+        forecast_functions.append(('RandomForest', forecast_random_forest))
+    if HAS_TF and HAS_SKLEARN:
+        forecast_functions.append(('LSTM', forecast_lstm_parallel))
+
+    # Execute forecasts in parallel
+    with ThreadPoolExecutor(max_workers=min(4, len(forecast_functions))) as executor:
+        # Submit all forecast functions
+        future_to_name = {
+            executor.submit(func, df, periods): name 
+            for name, func in forecast_functions
+        }
+        
+        # Collect results as they complete
+        for future in future_to_name:
+            name = future_to_name[future]
+            try:
+                result = future.result(timeout=300)  # 5 minute timeout per model
+                if result is not None:
+                    forecasts[name] = result
+                    logger.info(f"Completed {name} forecast")
+                else:
+                    logger.warning(f"{name} forecast returned None")
+            except Exception as e:
+                logger.error(f"{name} forecast failed: {str(e)}")
+                st.error(f"{tr(f'{name.lower()}_error', st.session_state.user_lang)}: {e}")
+
+    logger.info(f"Parallel forecast generation completed. Generated {len(forecasts)} models")
     return forecasts       
 
                  
@@ -3870,7 +4635,7 @@ if run:
     with forecast_col:
         st.subheader(tr("ai_forecasts", st.session_state.user_lang))
         with st.spinner(tr("running_models", st.session_state.user_lang)):
-            forecasts = forecast_all(df, periods=30)
+            forecasts = forecast_all_parallel(df, periods=30)
         
         if forecasts:
             for model_name, fc in forecasts.items():
