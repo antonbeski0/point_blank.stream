@@ -237,7 +237,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 **By using Point.Blank, you acknowledge these risks and agree to use the platform at your own discretion.**
 
-## 🙏 Acknowledgments
+##  Acknowledgments
 
 - **Yahoo Finance**: For providing free market data
 - **Facebook Prophet**: For time series forecasting
@@ -247,13 +247,14 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📞 Support
 
-- **Documentation**: [Wiki](https://github.com/yourusername/point-blank/wiki)
-- **Issues**: [GitHub Issues](https://github.com/yourusername/point-blank/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/point-blank/discussions)
-- **Email**: support@pointblank.app
+- **Documentation**: [Wiki](https://github.com/antonbeski0/point-blank/wiki)
+- **Issues**: [GitHub Issues](https://github.com/antonbeski0/point-blank/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/antonbeski0/point-blank/discussions)
+- **Email**: antbsk0@gmail.com
 
 ---
 
 **Made with ❤️ by the Point.Blank Team**
 
 *Last updated: December 2024*
+
