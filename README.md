@@ -1,6 +1,5 @@
 # Point.Blank - Advanced Stock Analysis Platform
 
-![Point.Blank Logo]
 
 A comprehensive, multilingual stock market analysis platform that combines technical analysis, AI-powered forecasting, and real-time news aggregation. Built with Streamlit and featuring advanced machine learning models for accurate market predictions.
 
@@ -257,5 +256,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 **Made with ❤️ by the Point.Blank Team**
 
 *Last updated: December 2024*
+
 
 
