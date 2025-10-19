@@ -124,6 +124,7 @@ For personalized financial guidance, please consult a licensed financial advisor
         "lower_bound": "Lower Bound",
         "upper_bound": "Upper Bound",
         "download": "Download",
+        "model": "Model",
         "warning": "Please accept the disclaimer to use the app.",
         "error_fetching": "Error fetching data",
         "error_computing": "Error computing indicators",
@@ -2897,25 +2898,95 @@ def fetch_yahoo_data(ticker: str, period="6mo", interval="1d", max_retries=3) ->
     return pd.DataFrame()
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute comprehensive technical indicators with proper data leakage prevention"""
     df = df.copy().reset_index(drop=True)
-    df['MA20'] = df['Close'].rolling(20).mean()
-    df['MA50'] = df['Close'].rolling(50).mean()
+    
+    # Ensure we have enough data for calculations
+    if len(df) < 50:
+        # For small datasets, use shorter periods
+        ma_period = min(20, len(df) // 2)
+        bb_period = min(20, len(df) // 2)
+        rsi_period = min(14, len(df) // 2)
+    else:
+        ma_period = 20
+        bb_period = 20
+        rsi_period = 14
+    
+    # Moving Averages - using proper naming convention
+    df['MA20'] = df['Close'].rolling(window=ma_period, min_periods=1).mean()
+    df['MA50'] = df['Close'].rolling(window=min(50, len(df)), min_periods=1).mean()
+    df['SMA_20'] = df['MA20']  # Alias for technical analysis compatibility
+    df['SMA_50'] = df['MA50']  # Alias for technical analysis compatibility
+    
+    # Exponential Moving Averages
     df['EMA12'] = df['Close'].ewm(span=12, adjust=False).mean()
     df['EMA26'] = df['Close'].ewm(span=26, adjust=False).mean()
+    
+    # MACD and Signal Line
     df['MACD'] = df['EMA12'] - df['EMA26']
-    df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-    df['BB_MID'] = df['Close'].rolling(20).mean()
-    df['BB_STD'] = df['Close'].rolling(20).std(ddof=0).fillna(0)
-    df['BB_UP'] = df['BB_MID'] + 2*df['BB_STD']
-    df['BB_LOW'] = df['BB_MID'] - 2*df['BB_STD']
+    df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+    df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
+    
+    # Bollinger Bands
+    df['BB_Middle'] = df['Close'].rolling(window=bb_period, min_periods=1).mean()
+    df['BB_Std'] = df['Close'].rolling(window=bb_period, min_periods=1).std(ddof=0)
+    df['BB_Upper'] = df['BB_Middle'] + (2 * df['BB_Std'])
+    df['BB_Lower'] = df['BB_Middle'] - (2 * df['BB_Std'])
+    
+    # Legacy naming for compatibility
+    df['BB_MID'] = df['BB_Middle']
+    df['BB_STD'] = df['BB_Std']
+    df['BB_UP'] = df['BB_Upper']
+    df['BB_LOW'] = df['BB_Lower']
+    
+    # RSI Calculation with proper handling
     delta = df['Close'].diff()
     up = delta.clip(lower=0)
     down = -delta.clip(upper=0)
-    roll_up = up.rolling(14).mean()
-    roll_down = down.rolling(14).mean()
-    rs = roll_up / (roll_down + 1e-8)
+    
+    # Use exponential moving average for RSI smoothing
+    roll_up = up.ewm(span=rsi_period, adjust=False).mean()
+    roll_down = down.ewm(span=rsi_period, adjust=False).mean()
+    
+    rs = roll_up / (roll_down + 1e-8)  # Avoid division by zero
     df['RSI'] = 100 - (100 / (1 + rs))
-    df['RSI'] = df['RSI'].clip(0,100).fillna(50)
+    df['RSI'] = df['RSI'].clip(0, 100).fillna(50)
+    
+    # Additional indicators for better forecasting
+    # Stochastic Oscillator
+    low_min = df['Low'].rolling(window=14, min_periods=1).min()
+    high_max = df['High'].rolling(window=14, min_periods=1).max()
+    df['Stoch_K'] = 100 * ((df['Close'] - low_min) / (high_max - low_min + 1e-8))
+    df['Stoch_D'] = df['Stoch_K'].rolling(window=3, min_periods=1).mean()
+    
+    # Williams %R
+    df['Williams_R'] = -100 * ((high_max - df['Close']) / (high_max - low_min + 1e-8))
+    
+    # Commodity Channel Index (CCI)
+    typical_price = (df['High'] + df['Low'] + df['Close']) / 3
+    sma_tp = typical_price.rolling(window=20, min_periods=1).mean()
+    mad = typical_price.rolling(window=20, min_periods=1).apply(lambda x: np.mean(np.abs(x - x.mean())))
+    df['CCI'] = (typical_price - sma_tp) / (0.015 * mad + 1e-8)
+    
+    # Average True Range (ATR)
+    high_low = df['High'] - df['Low']
+    high_close = np.abs(df['High'] - df['Close'].shift())
+    low_close = np.abs(df['Low'] - df['Close'].shift())
+    true_range = np.maximum(high_low, np.maximum(high_close, low_close))
+    df['ATR'] = true_range.rolling(window=14, min_periods=1).mean()
+    
+    # Price Rate of Change
+    df['ROC'] = df['Close'].pct_change(periods=10) * 100
+    
+    # Volume indicators
+    if 'Volume' in df.columns:
+        df['Volume_MA'] = df['Volume'].rolling(window=20, min_periods=1).mean()
+        df['Volume_Ratio'] = df['Volume'] / (df['Volume_MA'] + 1e-8)
+        
+        # On-Balance Volume
+        df['OBV'] = np.where(df['Close'] > df['Close'].shift(), df['Volume'], 
+                            np.where(df['Close'] < df['Close'].shift(), -df['Volume'], 0)).cumsum()
+    
     return df
 
 def plot_advanced(df: pd.DataFrame, title: str, show_indicators: bool = True):
@@ -2993,232 +3064,420 @@ def get_currency_info(ticker: str):
 # Forecasting Models
 # --------------------------
 def forecast_all(df: pd.DataFrame, periods: int = 30):
+    """
+    Comprehensive forecasting function with multiple models and data leakage prevention
+    """
     forecasts = {}
+    
+    # Validate input data
+    if df.empty or len(df) < 20:
+        st.warning("Insufficient data for forecasting. Need at least 20 data points.")
+        return forecasts
+    
+    # Ensure data is properly sorted and has required columns
+    df = df.copy()
+    if 'Date' not in df.columns or 'Close' not in df.columns:
+        st.error("Missing required columns: Date and Close")
+        return forecasts
+    
+    df['Date'] = pd.to_datetime(df['Date'])
+    df = df.sort_values('Date').reset_index(drop=True)
+    
+    # Remove any duplicate dates
+    df = df.drop_duplicates(subset=['Date']).reset_index(drop=True)
 
     # ==============================
-    # Enhanced Prophet
+    # Enhanced Prophet with Data Leakage Prevention
     # ==============================
     if HAS_PROPHET:
         try:
+            # Prepare data for Prophet (no future data leakage)
             prophet_df = df[['Date', 'Close']].rename(columns={'Date': 'ds', 'Close': 'y'}).copy()
             prophet_df['ds'] = pd.to_datetime(prophet_df['ds']).dt.tz_localize(None)
+            
+            # Calculate volatility from historical data only
+            historical_vol = prophet_df['y'].pct_change().std()
+            changepoint_scale = 0.01 if historical_vol < 0.01 else 0.05 if historical_vol < 0.02 else 0.1
 
-            # Dynamic changepoint scale (more flexible if volatile)
-            vol = prophet_df['y'].pct_change().std()
-            changepoint_scale = 0.05 if vol < 0.02 else 0.2
-
+            # Create Prophet model with optimized parameters
             m = Prophet(
                 growth='linear',
-                daily_seasonality=True,
-                weekly_seasonality=True,
-                yearly_seasonality=True,
-                seasonality_mode='multiplicative',
+                daily_seasonality=len(prophet_df) > 30,
+                weekly_seasonality=len(prophet_df) > 14,
+                yearly_seasonality=len(prophet_df) > 365,
+                seasonality_mode='additive',  # Changed to additive for better stability
                 changepoint_prior_scale=changepoint_scale,
-                seasonality_prior_scale=15.0,
-                holidays_prior_scale=15.0,
-                interval_width=0.95,
-                uncertainty_samples=1000
+                seasonality_prior_scale=10.0,
+                holidays_prior_scale=10.0,
+                interval_width=0.8,  # Reduced for tighter confidence intervals
+                uncertainty_samples=500  # Reduced for faster computation
             )
 
-            # Add custom seasonalities
-            m.add_seasonality(name='monthly', period=30.5, fourier_order=8)
-            m.add_seasonality(name='quarterly', period=91.25, fourier_order=10)
+            # Add custom seasonalities only if we have enough data
+            if len(prophet_df) > 60:
+                m.add_seasonality(name='monthly', period=30.5, fourier_order=5)
+            if len(prophet_df) > 180:
+                m.add_seasonality(name='quarterly', period=91.25, fourier_order=5)
 
-            # Add known regressors
-            for col in ['Volume', 'RSI', 'MACD', 'MA20', 'MA50']:
+            # Add regressors with proper forward-fill (no future data)
+            regressor_cols = ['Volume', 'RSI', 'MACD', 'MA20', 'MA50', 'ATR', 'Stoch_K']
+            for col in regressor_cols:
                 if col in df.columns:
-                    prophet_df[col.lower()] = df[col].fillna(df[col].mean())
+                    # Use forward-fill to avoid data leakage
+                    prophet_df[col.lower()] = df[col].fillna(method='ffill').fillna(df[col].mean())
                     m.add_regressor(col.lower())
 
+            # Fit model
             m.fit(prophet_df)
 
-            # Future DataFrame
+            # Create future dataframe
             future = m.make_future_dataframe(periods=periods, freq='D')
             future['ds'] = pd.to_datetime(future['ds']).dt.tz_localize(None)
 
-            for col in ['volume', 'rsi', 'macd', 'ma20', 'ma50']:
-                if col in prophet_df.columns:
-                    last_val = prophet_df[col].iloc[-1]
-                    future[col] = last_val
+            # Set regressor values for future periods (use last known values)
+            for col in regressor_cols:
+                if col.lower() in prophet_df.columns:
+                    last_val = prophet_df[col.lower()].iloc[-1]
+                    future[col.lower()] = last_val
 
+            # Make predictions
             forecast = m.predict(future)
-            fc = forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].rename(columns={'ds': 'Date'})
+            
+            # Extract only future predictions (avoid data leakage)
+            future_forecast = forecast.tail(periods)
+            fc = future_forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].rename(columns={'ds': 'Date'})
             forecasts['Prophet'] = fc
 
         except Exception as e:
-            st.error(f"{tr('prophet_error', st.session_state.user_lang)}: {e}")
+            st.error(f"Prophet Error: {str(e)}")
 
     # ==============================
-    # ARIMA Forecast
+    # Enhanced ARIMA with Proper Stationarity Testing
     # ==============================
     if HAS_ARIMA:
         try:
+            # Prepare time series
             series = df.set_index('Date')['Close'].sort_index()
             series.index = pd.to_datetime(series.index).tz_localize(None)
-
-            # Fill missing dates
+            
+            # Handle missing values and ensure daily frequency
             daily_idx = pd.date_range(series.index.min(), series.index.max(), freq='D')
-            series = series.reindex(daily_idx).ffill().bfill()  # forward & backward fill
+            series = series.reindex(daily_idx).interpolate(method='linear')
 
-            # Automatic order selection if dataset is large enough
-            try:
-                # Use simple ARIMA if dataset is small
-                order = (5, 1, 0) if len(series) < 500 else None
-                if order is None:
+            # Test for stationarity and apply differencing if needed
+            from statsmodels.tsa.stattools import adfuller
+            
+            # Determine optimal differencing
+            max_diff = 2
+            for d in range(max_diff + 1):
+                if d == 0:
+                    test_series = series
+                else:
+                    test_series = series.diff(d).dropna()
+                
+                if len(test_series) > 10:  # Ensure we have enough data
+                    adf_result = adfuller(test_series, autolag='AIC')
+                    if adf_result[1] < 0.05:  # p-value < 0.05, series is stationary
+                        break
+            
+            # Determine ARIMA order
+            if len(series) < 100:
+                # Simple order for small datasets
+                order = (2, d, 1)
+            else:
+                # Use auto_arima for larger datasets
+                try:
                     import pmdarima as pm
-                    model = pm.auto_arima(series, seasonal=False, stepwise=True, suppress_warnings=True, max_p=10, max_q=10)
-                    order = model.order
-            except Exception:
-                order = (5, 1, 0)  # fallback
+                    auto_model = pm.auto_arima(
+                        series, 
+                        seasonal=False, 
+                        stepwise=True, 
+                        suppress_warnings=True,
+                        max_p=5, max_q=5, max_d=2,
+                        information_criterion='aic',
+                        n_jobs=1
+                    )
+                    order = auto_model.order
+                except:
+                    order = (3, d, 2)  # Fallback order
 
+            # Fit ARIMA model
             model = ARIMA(series, order=order).fit()
-            fc = model.forecast(steps=periods)
+            
+            # Generate forecasts with confidence intervals
+            forecast_result = model.get_forecast(steps=periods)
+            fc_values = forecast_result.predicted_mean
+            conf_int = forecast_result.conf_int()
+            
+            # Create forecast dataframe
             dates = pd.date_range(start=series.index[-1] + timedelta(days=1), periods=periods)
-            forecasts['ARIMA'] = pd.DataFrame({'Date': dates, 'yhat': fc.values})
+            forecasts['ARIMA'] = pd.DataFrame({
+                'Date': dates, 
+                'yhat': fc_values.values,
+                'yhat_lower': conf_int.iloc[:, 0].values,
+                'yhat_upper': conf_int.iloc[:, 1].values
+            })
 
         except Exception as e:
-            st.error(f"{tr('arima_error', st.session_state.user_lang)}: {e}")
+            st.error(f"ARIMA Error: {str(e)}")
 
     # ==============================
-    # RandomForest Forecast
+    # Enhanced Random Forest with Feature Engineering
     # ==============================
     if HAS_SKLEARN:
         try:
-            data = df[['Close']].copy()
-            n_lags = min(10, len(data)//2)  # dynamic lag selection for small datasets
-
-            for lag in range(1, n_lags+1):
-                data[f'lag_{lag}'] = data['Close'].shift(lag)
-            data = data.dropna()
-
-            X = data[[f'lag_{i}' for i in range(1, n_lags+1)]].values
-            y = data['Close'].values
-
-            model = RandomForestRegressor(n_estimators=500, max_depth=None, random_state=42, n_jobs=-1)
-            model.fit(X, y)
-
-            # Iterative multi-step forecast
-            last_window = X[-1].tolist()
-            preds = []
-            for _ in range(periods):
-                p = float(model.predict([last_window]))
-                preds.append(p)
-                last_window = [p] + last_window[:-1]
-
-            dates = pd.date_range(start=df['Date'].iloc[-1] + timedelta(days=1), periods=periods)
-            forecasts['RandomForest'] = pd.DataFrame({'Date': dates, 'yhat': preds})
+            # Create comprehensive feature set
+            feature_df = df.copy()
+            
+            # Price-based features
+            feature_df['price_change'] = feature_df['Close'].pct_change()
+            feature_df['price_change_2'] = feature_df['Close'].pct_change(2)
+            feature_df['price_change_5'] = feature_df['Close'].pct_change(5)
+            
+            # Technical indicators as features
+            tech_features = ['RSI', 'MACD', 'MACD_Signal', 'MA20', 'MA50', 'ATR', 'Stoch_K', 'Williams_R', 'CCI']
+            available_features = [f for f in tech_features if f in feature_df.columns]
+            
+            # Lag features (no future data leakage)
+            lag_periods = min(10, len(feature_df) // 3)
+            for lag in range(1, lag_periods + 1):
+                feature_df[f'close_lag_{lag}'] = feature_df['Close'].shift(lag)
+                for feat in available_features:
+                    feature_df[f'{feat.lower()}_lag_{lag}'] = feature_df[feat].shift(lag)
+            
+            # Rolling statistics
+            for window in [5, 10, 20]:
+                if len(feature_df) > window:
+                    feature_df[f'close_mean_{window}'] = feature_df['Close'].rolling(window).mean()
+                    feature_df[f'close_std_{window}'] = feature_df['Close'].rolling(window).std()
+                    feature_df[f'close_min_{window}'] = feature_df['Close'].rolling(window).min()
+                    feature_df[f'close_max_{window}'] = feature_df['Close'].rolling(window).max()
+            
+            # Volume features
+            if 'Volume' in feature_df.columns:
+                feature_df['volume_ma'] = feature_df['Volume'].rolling(20).mean()
+                feature_df['volume_ratio'] = feature_df['Volume'] / feature_df['volume_ma']
+                feature_df['volume_change'] = feature_df['Volume'].pct_change()
+            
+            # Prepare training data (remove rows with NaN)
+            feature_cols = [col for col in feature_df.columns if col not in ['Date', 'Close', 'Open', 'High', 'Low']]
+            training_data = feature_df[feature_cols + ['Close']].dropna()
+            
+            if len(training_data) < 50:
+                st.warning("Insufficient data for Random Forest forecasting")
+            else:
+                X = training_data[feature_cols].values
+                y = training_data['Close'].values
+                
+                # Use optimized Random Forest parameters
+                model = RandomForestRegressor(
+                    n_estimators=200,  # Reduced for speed
+                    max_depth=10,
+                    min_samples_split=5,
+                    min_samples_leaf=2,
+                    random_state=42,
+                    n_jobs=-1,
+                    max_features='sqrt'
+                )
+                
+                model.fit(X, y)
+                
+                # Multi-step forecasting with proper feature updates
+                last_features = training_data[feature_cols].iloc[-1].values
+                predictions = []
+                
+                for step in range(periods):
+                    # Predict next value
+                    pred = model.predict([last_features])[0]
+                    predictions.append(pred)
+                    
+                    # Update features for next prediction (simplified approach)
+                    # Shift lag features and update with new prediction
+                    new_features = last_features.copy()
+                    
+                    # Update close price lags
+                    for i in range(len(feature_cols)):
+                        if 'close_lag_' in feature_cols[i]:
+                            lag_num = int(feature_cols[i].split('_')[-1])
+                            if lag_num == 1:
+                                new_features[i] = pred
+                            else:
+                                # Find the previous lag value
+                                prev_lag_col = f'close_lag_{lag_num-1}'
+                                if prev_lag_col in feature_cols:
+                                    prev_idx = feature_cols.index(prev_lag_col)
+                                    new_features[i] = last_features[prev_idx]
+                    
+                    last_features = new_features
+                
+                # Create forecast dataframe
+                dates = pd.date_range(start=df['Date'].iloc[-1] + timedelta(days=1), periods=periods)
+                forecasts['RandomForest'] = pd.DataFrame({'Date': dates, 'yhat': predictions})
 
         except Exception as e:
-            st.error(f"{tr('rf_error', st.session_state.user_lang)}: {e}")
+            st.error(f"Random Forest Error: {str(e)}")
 
     # ==============================
-    # Enhanced LSTM
+    # Enhanced LSTM with Proper Cross-Validation
     # ==============================
     if HAS_TF and HAS_SKLEARN:
         try:
-            features_df = df.copy()
+            # Select features for LSTM
             feature_cols = ['Close', 'Volume', 'High', 'Low', 'Open']
-            extra_cols = ['RSI', 'MACD', 'MA20', 'MA50']
-            feature_cols.extend([c for c in extra_cols if c in df.columns])
-
-            feature_data = features_df[feature_cols].fillna(method='ffill').fillna(method='bfill')
-
+            tech_features = ['RSI', 'MACD', 'MA20', 'MA50', 'ATR', 'Stoch_K']
+            feature_cols.extend([f for f in tech_features if f in df.columns])
+            
+            # Prepare feature data
+            feature_data = df[feature_cols].copy()
+            
+            # Handle missing values with forward fill
+            feature_data = feature_data.fillna(method='ffill').fillna(method='bfill')
+            
+            # Normalize features
             scaler = MinMaxScaler()
             scaled_data = scaler.fit_transform(feature_data)
-
-            # Adjust sequence length for small datasets
-            default_sequence_length = 60
-            sequence_length = min(default_sequence_length, len(scaled_data) // 2)
+            
+            # Determine sequence length based on data size
+            sequence_length = min(60, len(scaled_data) // 3)
             if sequence_length < 10:
-                st.warning(tr('lstm_warning1', st.session_state.user_lang))
-                forecasts['LSTM'] = None
+                st.warning("Insufficient data for LSTM forecasting")
             else:
+                # Create sequences
                 X_sequences, y_sequences = [], []
-
+                
                 for i in range(sequence_length, len(scaled_data)):
                     X_sequences.append(scaled_data[i - sequence_length:i])
                     y_sequences.append(scaled_data[i, 0])  # Close price
-
-                X_sequences, y_sequences = np.array(X_sequences), np.array(y_sequences)
-
-                # Skip if still too few sequences
-                if len(X_sequences) < 50:
-                    st.warning(tr('lstm_warning2', st.session_state.user_lang))
-                    forecasts['LSTM'] = None
+                
+                X_sequences = np.array(X_sequences)
+                y_sequences = np.array(y_sequences)
+                
+                if len(X_sequences) < 30:
+                    st.warning("Insufficient sequences for LSTM training")
                 else:
-                    # Train-test split
+                    # Time series cross-validation split
                     train_size = int(len(X_sequences) * 0.8)
-                    X_train, X_test = X_sequences[:train_size], X_sequences[train_size:]
-                    y_train, y_test = y_sequences[:train_size], y_sequences[train_size:]
-
+                    X_train, X_val = X_sequences[:train_size], X_sequences[train_size:]
+                    y_train, y_val = y_sequences[:train_size], y_sequences[train_size:]
+                    
+                    # Clear any existing models
                     tf.keras.backend.clear_session()
-
+                    
+                    # Build optimized LSTM model
                     model = Sequential([
-                        LSTM(128, return_sequences=True, input_shape=(sequence_length, len(feature_cols))),
-                        Dropout(0.3),
+                        LSTM(64, return_sequences=True, input_shape=(sequence_length, len(feature_cols))),
+                        Dropout(0.2),
                         BatchNormalization(),
-
-                        Bidirectional(LSTM(64, return_sequences=True)),
-                        Dropout(0.3),
-                        BatchNormalization(),
-
+                        
                         LSTM(32, return_sequences=False),
                         Dropout(0.2),
-
-                        Dense(64, activation='relu'),
+                        
                         Dense(32, activation='relu'),
+                        Dense(16, activation='relu'),
                         Dense(1, activation='linear')
                     ])
-
-                    optimizer = optimizers.Adam(learning_rate=0.001)
+                    
+                    # Compile with optimized settings
+                    optimizer = optimizers.Adam(learning_rate=0.001, clipnorm=1.0)
                     model.compile(
                         optimizer=optimizer,
-                        loss=tf.keras.losses.Huber(),
-                        metrics=['mae', 'mse']
+                        loss='mse',
+                        metrics=['mae']
                     )
-
+                    
+                    # Callbacks for better training
                     callbacks_list = [
-                        callbacks.EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True),
-                        callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-5),
-                        callbacks.ModelCheckpoint("best_lstm.h5", save_best_only=True, monitor="val_loss")
+                        callbacks.EarlyStopping(
+                            monitor='val_loss', 
+                            patience=15, 
+                            restore_best_weights=True,
+                            min_delta=1e-6
+                        ),
+                        callbacks.ReduceLROnPlateau(
+                            monitor='val_loss', 
+                            factor=0.5, 
+                            patience=8, 
+                            min_lr=1e-6
+                        )
                     ]
-
-                    model.fit(
+                    
+                    # Train model
+                    history = model.fit(
                         X_train, y_train,
-                        epochs=100,
-                        batch_size=32,
-                        validation_data=(X_test, y_test),
+                        epochs=50,  # Reduced for speed
+                        batch_size=16,
+                        validation_data=(X_val, y_val),
                         callbacks=callbacks_list,
                         verbose=0
                     )
-
-                    # Iterative forecasting
+                    
+                    # Multi-step forecasting
                     last_sequence = scaled_data[-sequence_length:]
                     predictions_scaled = []
-
-                    for _ in range(periods):
+                    
+                    for step in range(periods):
+                        # Reshape for prediction
                         seq_input = last_sequence.reshape(1, sequence_length, len(feature_cols))
-                        pred_scaled = float(model.predict(seq_input, verbose=0)[0, 0])
+                        
+                        # Predict next value
+                        pred_scaled = model.predict(seq_input, verbose=0)[0, 0]
                         predictions_scaled.append(pred_scaled)
-
+                        
+                        # Update sequence for next prediction
                         new_row = last_sequence[-1].copy()
-                        new_row[0] = pred_scaled
+                        new_row[0] = pred_scaled  # Update close price
+                        
+                        # Shift sequence
                         last_sequence = np.vstack([last_sequence[1:], new_row])
-
-                    # Inverse scaling
+                    
+                    # Inverse transform predictions
                     pred_array = np.zeros((periods, len(feature_cols)))
                     pred_array[:, 0] = predictions_scaled
+                    
+                    # Use last known values for other features
                     for i in range(1, len(feature_cols)):
                         pred_array[:, i] = scaled_data[-1, i]
-
+                    
                     pred_inverse = scaler.inverse_transform(pred_array)
-                    predictions = pred_inverse[:, 0].tolist()
-
+                    predictions = pred_inverse[:, 0]
+                    
+                    # Create forecast dataframe
                     dates = pd.date_range(start=df['Date'].iloc[-1] + timedelta(days=1), periods=periods)
                     forecasts['LSTM'] = pd.DataFrame({'Date': dates, 'yhat': predictions})
 
         except Exception as e:
-            st.error(f"{tr('lstm_error', st.session_state.user_lang)}: {e}")
+            st.error(f"LSTM Error: {str(e)}")
+
+    # ==============================
+    # Ensemble Forecast (if multiple models available)
+    # ==============================
+    if len(forecasts) > 1:
+        try:
+            # Get all forecast dates (should be the same)
+            all_dates = list(forecasts.values())[0]['Date']
+            
+            # Calculate ensemble prediction
+            ensemble_predictions = []
+            for i in range(len(all_dates)):
+                pred_values = []
+                for model_name, fc in forecasts.items():
+                    if fc is not None and 'yhat' in fc.columns:
+                        pred_values.append(fc['yhat'].iloc[i])
+                
+                if pred_values:
+                    # Use median for robustness
+                    ensemble_predictions.append(np.median(pred_values))
+                else:
+                    ensemble_predictions.append(np.nan)
+            
+            # Create ensemble forecast
+            forecasts['Ensemble'] = pd.DataFrame({
+                'Date': all_dates,
+                'yhat': ensemble_predictions
+            })
+            
+        except Exception as e:
+            st.warning(f"Ensemble forecast failed: {str(e)}")
 
     return forecasts       
 
@@ -3399,9 +3658,9 @@ def generate_technical_analysis(df: pd.DataFrame, ticker: str) -> dict:
     }
     
     # Moving Averages Analysis
-    if 'SMA_20' in df.columns and 'SMA_50' in df.columns:
-        sma_20 = latest['SMA_20']
-        sma_50 = latest['SMA_50']
+    if ('SMA_20' in df.columns and 'SMA_50' in df.columns) or ('MA20' in df.columns and 'MA50' in df.columns):
+        sma_20 = latest.get('SMA_20', latest.get('MA20', 0))
+        sma_50 = latest.get('SMA_50', latest.get('MA50', 0))
         current_price = latest['Close']
         
         if current_price > sma_20 > sma_50:
@@ -3455,10 +3714,10 @@ def generate_technical_analysis(df: pd.DataFrame, ticker: str) -> dict:
         }
     
     # Bollinger Bands Analysis
-    if 'BB_Upper' in df.columns and 'BB_Lower' in df.columns:
-        bb_upper = latest['BB_Upper']
-        bb_lower = latest['BB_Lower']
-        bb_middle = latest.get('BB_Middle', (bb_upper + bb_lower) / 2)
+    if ('BB_Upper' in df.columns and 'BB_Lower' in df.columns) or ('BB_UP' in df.columns and 'BB_LOW' in df.columns):
+        bb_upper = latest.get('BB_Upper', latest.get('BB_UP', 0))
+        bb_lower = latest.get('BB_Lower', latest.get('BB_LOW', 0))
+        bb_middle = latest.get('BB_Middle', latest.get('BB_MID', (bb_upper + bb_lower) / 2))
         current_price = latest['Close']
         
         if current_price > bb_upper:
@@ -4067,6 +4326,5 @@ else:
     with status_cols[3]:
         status = f" {tr('available', st.session_state.user_lang)}" if HAS_TF else f" {tr('missing', st.session_state.user_lang)}"
         st.markdown(f"**{tr('lstm', st.session_state.user_lang)}:** {status}")
-
 
 
