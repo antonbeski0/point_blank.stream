@@ -1,4 +1,5 @@
 # POINT.BLANK
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 **Point.Blank** — a polished Streamlit app for stock market data, technical analysis, news aggregation, and multiple forecasting models (Prophet, ARIMA, Random Forest, LSTM). It’s designed for interactive exploration, quick exports (CSV/JSON), and optional ML-powered forecasting when the appropriate libraries are installed.
 
