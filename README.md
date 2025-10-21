@@ -7,7 +7,7 @@
 
 ## Table of Contents
 - [Key Features](#key-features)  
-- [IMAGES](#demo--screenshots)  
+- [IMAGES](#IMAGES)  
 - [Requirements](#requirements)  
 - [Installation](#installation)  
 - [Quick Start](#quick-start)  
@@ -34,7 +34,7 @@
 
 ---
 
-## Demo / Screenshots
+## IMAGES
 <img width="744" height="496" alt="5" src="https://github.com/user-attachments/assets/557f11f6-f580-4480-9594-bd7c53370c4e" />
 <img width="508" height="304" alt="4" src="https://github.com/user-attachments/assets/8cc0fa52-7824-4ffd-bb4e-72452b6a081c" />
 
