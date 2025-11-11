@@ -63,48 +63,38 @@ Optional (for forecasting / advanced features):
 
 ---
 
-## Installation
+Installation
+Clone the repository
 
-1. Clone the repository:
-```bash
-git clone <your-repo-url>
-cd <your-repo-folder>
-```
+bash   git clone https://github.com/antonbeski0/point_blank.stream.git
+   cd point_blank.stream
+Create a virtual environment (recommended)
 
-2. (Recommended) Create and activate a virtual environment:
-```bash
-python -m venv .venv
-# macOS / Linux
-source .venv/bin/activate
-# Windows (PowerShell)
-.venv\Scripts\Activate.ps1
-```
+bash   # Windows
+   python -m venv .venv
+   .venv\Scripts\activate
 
-3. Install the core dependencies:
-```bash
-pip install streamlit yfinance pandas numpy plotly streamlit-plotly-events feedparser pytz requests
-```
+   # macOS/Linux
+   python3 -m venv .venv
+   source .venv/bin/activate
+Install core dependencies
 
-4. Install optional ML dependencies when you need them:
-```bash
-pip install prophet statsmodels pmdarima scikit-learn tensorflow
-```
+bash   pip install -r requirements.txtOr install manually:
+bash   pip install streamlit>=1.28.0 yfinance>=0.2.18 pandas>=2.0.0 numpy>=1.24.0 plotly>=5.15.0 streamlit-plotly-events feedparser>=6.0.10 pytz>=2023.3 requests
+Install optional ML dependencies (for forecasting features)
 
----
+bash   # All ML libraries
+   pip install prophet>=1.1.4 statsmodels>=0.14.0 pmdarima scikit-learn>=1.3.0 tensorflow>=2.13.0
 
-## Quick Start
+   # Or individually as needed
+   pip install prophet  # For Prophet forecasting
+   pip install statsmodels pmdarima  # For ARIMA forecasting
+   pip install scikit-learn  # For Random Forest
+   pip install tensorflow  # For LSTM
+Run the application
 
-1. Rename your file to `point_blank.py` (if needed).
-2. Run the app:
-```bash
-streamlit run point_blank.py
-```
-3. In the browser UI:
-- Accept the disclaimer to continue.  
-- Select a ticker (e.g., `AAPL`, `TSLA`, `BTC-USD`).  
-- Choose history period, enable indicators, then press **Run All**.
-
----
+bash   streamlit run point_blank.py
+Open your browser to http://localhost:8501
 
 ## Configuration & Options
 
