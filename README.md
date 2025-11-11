@@ -3,7 +3,7 @@
 
 Point.Blank is a comprehensive stock analysis and forecasting tool. It provides real-time stock data, technical indicators, AI-powered price forecasts, and the latest news for any given ticker. The application features an interactive globe for timezone selection, multi-language support, and a powerful search for international stock tickers.
 
-[![License: CC BY-NC 4.0](https://licensebuttons.net/l/by-nc/4.0/88x31.png)](https://creativecommons.org/licenses/by-nc/4.0/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Features
 
@@ -51,4 +51,4 @@ Make sure you have Python 3.8+ and pip installed on your system.
 
 ## License
 
-This project is licensed under the Creative Commons Attribution-NonCommercial 4.0 International License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
