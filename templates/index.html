@@ -1,0 +1,348 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>POINT.BLANK</title>
+    <style>
+        :root {
+            --bg: #000000;
+            --card: #1C1C1E;
+            --muted: #8E8E93;
+            --accent: #0A84FF;
+            --border: #38383A;
+            --text: #FFFFFF;
+            --secondary-text: #EBEBF599;
+        }
+        body {
+            background-color: var(--bg);
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            padding: 1rem;
+        }
+        .container {
+            width: 100%;
+            max-width: 1200px;
+        }
+        h1, h2, h3, h4 {
+            color: var(--text);
+            font-weight: 600;
+        }
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1rem;
+            align-items: end;
+        }
+        .control-group {
+            display: flex;
+            flex-direction: column;
+        }
+        label {
+            color: var(--muted);
+            font-size: 0.9rem;
+            margin-bottom: 0.25rem;
+        }
+        select, input, button {
+            background-color: var(--card);
+            color: var(--text);
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            padding: 0.75em 1em;
+            font-size: 1rem;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+        button {
+            cursor: pointer;
+            background-color: var(--accent);
+        }
+        button:hover {
+            opacity: 0.8;
+            transform: translateY(-1px);
+        }
+        #chart {
+            width: 100%;
+            height: 550px;
+            margin-bottom: 1rem;
+        }
+        .columns {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+        .news-list, #forecast-container {
+            background: var(--card);
+            border-radius: 14px;
+            padding: 1.5rem;
+            border: 1px solid var(--border);
+        }
+        .news-card {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 1rem;
+            text-decoration: none;
+            color: inherit;
+        }
+        .news-img {
+            width: 120px;
+            height: 80px;
+            object-fit: cover;
+            border-radius: 8px;
+        }
+        #globe-container {
+            width: 100%;
+            height: 300px;
+            margin-bottom: 1rem;
+        }
+        #ticker-search-results {
+            max-height: 200px;
+            overflow-y: auto;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+        .search-result-item {
+            padding: 0.5rem 1rem;
+            cursor: pointer;
+        }
+        .search-result-item:hover {
+            background: var(--accent);
+        }
+    </style>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://d3js.org/topojson.v3.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h1 style="text-align: center;">POINT.BLANK</h1>
+        
+        <div id="globe-container"></div>
+
+        <div class="controls">
+            <div class="control-group">
+                <label for="ticker-input">Ticker</label>
+                <input type="text" id="ticker-input" placeholder="Search for a ticker...">
+                <div id="ticker-search-results"></div>
+            </div>
+            <div class="control-group">
+                <label for="period-select">Period</label>
+                <select id="period-select">
+                    <option value="6mo" selected>6mo</option>
+                    <option value="1y">1y</option>
+                    <option value="5y">5y</option>
+                    <option value="max">Max</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label for="language-select">Language</label>
+                <select id="language-select"></select>
+            </div>
+            <div class="control-group">
+                <label for="timezone-select">Timezone</label>
+                <select id="timezone-select"></select>
+            </div>
+            <button id="run-button">Run</button>
+        </div>
+
+        <div id="chart"></div>
+
+        <div class="columns">
+            <div id="forecast-container">
+                <h2>AI Forecast</h2>
+                <div id="forecast"></div>
+            </div>
+            <div class="news-list-container">
+                <h2>News</h2>
+                <div id="news" class="news-list"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            // Load dynamic selectors
+            populateSelect('language-select', '/api/languages');
+            populateSelect('timezone-select', '/api/timezones');
+
+            // Globe setup
+            setupGlobe();
+
+            // Event Listeners
+            document.getElementById('run-button').addEventListener('click', runAnalysis);
+            document.getElementById('ticker-input').addEventListener('keyup', searchTickers);
+        });
+
+        function populateSelect(elementId, endpoint) {
+            const select = document.getElementById(elementId);
+            fetch(endpoint)
+                .then(response => response.json())
+                .then(data => {
+                    for (const key in data) {
+                        const option = document.createElement('option');
+                        option.value = key;
+                        option.textContent = data[key];
+                        select.appendChild(option);
+                    }
+                });
+        }
+
+        function setupGlobe() {
+            const width = document.getElementById('globe-container').offsetWidth;
+            const height = 300;
+            const projection = d3.geoOrthographic()
+                .scale(height / 2 - 10)
+                .translate([width / 2, height / 2])
+                .clipAngle(90);
+
+            const path = d3.geoPath().projection(projection);
+            const svg = d3.select('#globe-container').append('svg')
+                .attr('width', width)
+                .attr('height', height);
+
+            svg.append('path')
+                .datum({type: 'Sphere'})
+                .attr('class', 'sphere')
+                .attr('d', path)
+                .style('fill', 'var(--card)');
+
+            // Load world data and draw countries
+            d3.json('https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json').then(world => {
+                svg.append('g').selectAll('path')
+                    .data(topojson.feature(world, world.objects.countries).features)
+                    .enter().append('path')
+                    .attr('d', path)
+                    .style('fill', 'var(--border)')
+                    .style('stroke', 'var(--bg)');
+            });
+
+            // Drag rotation
+            const drag = d3.drag()
+                .on('drag', (event) => {
+                    const rotate = projection.rotate();
+                    const k = 0.5; // Sensitivity
+                    projection.rotate([rotate[0] + event.dx * k, rotate[1] - event.dy * k]);
+                    svg.selectAll('path').attr('d', path);
+                });
+
+            svg.call(drag);
+        }
+
+        function searchTickers() {
+            const query = document.getElementById('ticker-input').value;
+            const resultsContainer = document.getElementById('ticker-search-results');
+            if (query.length < 2) {
+                resultsContainer.innerHTML = '';
+                return;
+            }
+            fetch(`/api/search_tickers?q=${query}`)
+                .then(response => response.json())
+                .then(data => {
+                    resultsContainer.innerHTML = data.map(item => 
+                        `<div class="search-result-item" data-ticker="${item.ticker}">${item.ticker} - ${item.name}</div>`
+                    ).join('');
+                    document.querySelectorAll('.search-result-item').forEach(item => {
+                        item.addEventListener('click', () => {
+                            document.getElementById('ticker-input').value = item.dataset.ticker;
+                            resultsContainer.innerHTML = '';
+                        });
+                    });
+                });
+        }
+
+        function runAnalysis() {
+            const ticker = document.getElementById('ticker-input').value;
+            const period = document.getElementById('period-select').value;
+
+            if (!ticker) {
+                alert('Please select a ticker.');
+                return;
+            }
+
+            fetchData(ticker, period);
+            fetchNews(ticker);
+            fetchForecast(ticker, period);
+        }
+
+        function fetchData(ticker, period) {
+            fetch(`/api/data?ticker=${ticker}&period=${period}`)
+                .then(response => response.json())
+                .then(result => {
+                    if (result.error) {
+                        alert(result.error);
+                        return;
+                    }
+                    plotChart(result.data, ticker);
+                });
+        }
+
+        function plotChart(data, ticker) {
+            const trace = {
+                x: data.map(d => d.Date),
+                close: data.map(d => d.Close),
+                high: data.map(d => d.High),
+                low: data.map(d => d.Low),
+                open: data.map(d => d.Open),
+                type: 'candlestick',
+                name: ticker,
+                increasing: {line: {color: '#00b555'}},
+                decreasing: {line: {color: '#ff4040'}}
+            };
+
+            const layout = {
+                title: `${ticker} Price Chart`,
+                paper_bgcolor: 'var(--bg)',
+                plot_bgcolor: 'var(--card)',
+                font: {color: 'var(--text)'},
+                xaxis: {gridcolor: 'var(--border)'},
+                yaxis: {gridcolor: 'var(--border)'}
+            };
+
+            Plotly.newPlot('chart', [trace], layout);
+        }
+
+        function fetchNews(ticker) {
+            const lang = document.getElementById('language-select').value;
+            fetch(`/api/news?ticker=${ticker}&hl=${lang}`)
+                .then(response => response.json())
+                .then(articles => {
+                    const newsContainer = document.getElementById('news');
+                    newsContainer.innerHTML = articles.length ? 
+                        articles.map(article => `
+                            <a href="${article.link}" target="_blank" class="news-card">
+                                <div class="news-content">
+                                    <h4>${article.title}</h4>
+                                    <p>${article.source} - ${new Date(article.published).toLocaleDateString()}</p>
+                                </div>
+                            </a>
+                        `).join('') : '<p>No news found.</p>';
+                });
+        }
+
+        function fetchForecast(ticker, period) {
+            fetch(`/api/forecast?ticker=${ticker}&period=${period}`)
+                .then(response => response.json())
+                .then(forecast => {
+                    const forecastContainer = document.getElementById('forecast');
+                    if (forecast.error) {
+                        forecastContainer.innerHTML = `<p>${forecast.error}</p>`;
+                        return;
+                    }
+                    // Assuming forecast is an array of points
+                    const latestForecast = forecast[forecast.length - 1];
+                    forecastContainer.innerHTML = `
+                        <p>Predicted price in 30 days:</p>
+                        <h3>${latestForecast.yhat.toFixed(2)}</h3>
+                        <p>Range: ${latestForecast.yhat_lower.toFixed(2)} - ${latestForecast.yhat_upper.toFixed(2)}</p>
+                    `;
+                });
+        }
+
+    </script>
+</body>
+</html>
