@@ -7,7 +7,3 @@ pytz
 feedparser
 requests
 prophet
-statsmodels
-scikit-learn
-tensorflow
-pmdarima
