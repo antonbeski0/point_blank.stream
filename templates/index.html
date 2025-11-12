@@ -67,7 +67,7 @@
         }
         #chart {
             width: 100%;
-            height: 550px;
+            height: 650px;
             margin-bottom: 1rem;
         }
         .columns {
@@ -282,7 +282,7 @@
         }
 
         function plotChart(data, ticker) {
-            const trace = {
+            const trace_candlestick = {
                 x: data.map(d => d.Date),
                 close: data.map(d => d.Close),
                 high: data.map(d => d.High),
@@ -291,19 +291,165 @@
                 type: 'candlestick',
                 name: ticker,
                 increasing: {line: {color: '#00b555'}},
-                decreasing: {line: {color: '#ff4040'}}
+                decreasing: {line: {color: '#ff4040'}},
+                xaxis: 'x',
+                yaxis: 'y1'
+            };
+
+            const trace_ma20 = {
+                x: data.map(d => d.Date),
+                y: data.map(d => d.MA20),
+                type: 'scatter',
+                mode: 'lines',
+                name: 'MA20',
+                line: {color: 'blue', width: 1},
+                xaxis: 'x',
+                yaxis: 'y1'
+            };
+            
+            const trace_ma50 = {
+                x: data.map(d => d.Date),
+                y: data.map(d => d.MA50),
+                type: 'scatter',
+                mode: 'lines',
+                name: 'MA50',
+                line: {color: 'orange', width: 1},
+                xaxis: 'x',
+                yaxis: 'y1'
+            };
+
+            const trace_bb_upper = {
+                x: data.map(d => d.Date),
+                y: data.map(d => d.BB_Upper),
+                type: 'scatter',
+                mode: 'lines',
+                name: 'BB Upper',
+                line: {color: 'rgba(100, 100, 100, 0.5)', width: 1, dash: 'dash'},
+                xaxis: 'x',
+                yaxis: 'y1'
+            };
+
+            const trace_bb_lower = {
+                x: data.map(d => d.Date),
+                y: data.map(d => d.BB_Lower),
+                type: 'scatter',
+                mode: 'lines',
+                name: 'BB Lower',
+                line: {color: 'rgba(100, 100, 100, 0.5)', width: 1, dash: 'dash'},
+                fill: 'tonexty',
+                fillcolor: 'rgba(100, 100, 100, 0.1)',
+                xaxis: 'x',
+                yaxis: 'y1'
+            };
+
+            const trace_volume = {
+                x: data.map(d => d.Date),
+                y: data.map(d => d.Volume),
+                type: 'bar',
+                name: 'Volume',
+                marker: {
+                    color: data.map((d, i) => (i > 0 && data[i].Close > data[i-1].Close) ? 'rgba(0, 181, 85, 0.5)' : 'rgba(255, 64, 64, 0.5)')
+                },
+                xaxis: 'x',
+                yaxis: 'y2'
+            };
+
+            const trace_rsi = {
+                x: data.map(d => d.Date),
+                y: data.map(d => d.RSI),
+                type: 'scatter',
+                mode: 'lines',
+                name: 'RSI',
+                line: {color: 'purple', width: 1},
+                xaxis: 'x',
+                yaxis: 'y3'
+            };
+
+            const trace_macd = {
+                x: data.map(d => d.Date),
+                y: data.map(d => d.MACD),
+                type: 'scatter',
+                mode: 'lines',
+                name: 'MACD',
+                line: {color: 'cyan', width: 1},
+                xaxis: 'x',
+                yaxis: 'y4'
+            };
+
+            const trace_macd_signal = {
+                x: data.map(d => d.Date),
+                y: data.map(d => d.MACD_Signal),
+                type: 'scatter',
+                mode: 'lines',
+                name: 'MACD Signal',
+                line: {color: 'magenta', width: 1},
+                xaxis: 'x',
+                yaxis: 'y4'
+            };
+
+            const trace_macd_hist = {
+                x: data.map(d => d.Date),
+                y: data.map(d => d.MACD - d.MACD_Signal),
+                type: 'bar',
+                name: 'MACD Hist',
+                marker: {
+                    color: data.map(d => (d.MACD - d.MACD_Signal) > 0 ? 'rgba(0, 255, 0, 0.5)' : 'rgba(255, 0, 0, 0.5)')
+                },
+                xaxis: 'x',
+                yaxis: 'y4'
             };
 
             const layout = {
-                title: `${ticker} Price Chart`,
+                title: `${ticker} Advanced Price Chart`,
                 paper_bgcolor: 'var(--bg)',
                 plot_bgcolor: 'var(--card)',
                 font: {color: 'var(--text)'},
-                xaxis: {gridcolor: 'var(--border)'},
-                yaxis: {gridcolor: 'var(--border)'}
+                xaxis: {
+                    gridcolor: 'var(--border)',
+                    rangeslider: {
+                        visible: false
+                    }
+                },
+                yaxis: {
+                    title: 'Price',
+                    gridcolor: 'var(--border)',
+                    domain: [0.5, 1]
+                },
+                yaxis2: {
+                    title: 'Volume',
+                    gridcolor: 'var(--border)',
+                    domain: [0.3, 0.48]
+                },
+                yaxis3: {
+                    title: 'RSI',
+                    gridcolor: 'var(--border)',
+                    domain: [0.15, 0.28]
+                },
+                yaxis4: {
+                    title: 'MACD',
+                    gridcolor: 'var(--border)',
+                    domain: [0, 0.13]
+                },
+                legend: {
+                    orientation: 'h',
+                    y: -0.1,
+                    x: 0.5,
+                    xanchor: 'center'
+                }
             };
 
-            Plotly.newPlot('chart', [trace], layout);
+            Plotly.newPlot('chart', [
+                trace_candlestick, 
+                trace_ma20,
+                trace_ma50,
+                trace_bb_upper,
+                trace_bb_lower,
+                trace_volume,
+                trace_rsi,
+                trace_macd,
+                trace_macd_signal,
+                trace_macd_hist
+            ], layout);
         }
 
         function fetchNews(ticker) {
